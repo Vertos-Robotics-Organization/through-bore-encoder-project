@@ -1,0 +1,4 @@
+../Core/Src/non_blocking_morse.c:48:13:is_delay_elapsed	1
+../Core/Src/non_blocking_morse.c:54:6:blink_led_morse_init	1
+../Core/Src/non_blocking_morse.c:66:6:blink_led_morse_process	16
+../Core/Src/non_blocking_morse.c:191:13:get_morse_code	5

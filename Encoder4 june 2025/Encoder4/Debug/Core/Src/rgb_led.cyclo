@@ -1,0 +1,4 @@
+../Core/Src/rgb_led.c:12:6:hue_to_rgb	10
+../Core/Src/rgb_led.c:77:6:cycle_hue_once	2
+../Core/Src/rgb_led.c:96:6:set_led_rgb	1
+../Core/Src/rgb_led.c:125:6:set_led_hue	1

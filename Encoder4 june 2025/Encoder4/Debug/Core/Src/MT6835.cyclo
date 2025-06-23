@@ -1,0 +1,7 @@
+../Core/Src/MT6835.c:15:6:mt6835_init	1
+../Core/Src/MT6835.c:24:9:calculate_crc_smbus	4
+../Core/Src/MT6835.c:48:19:handle_spi_status	3
+../Core/Src/MT6835.c:117:5:mt6835_update_counts	6
+../Core/Src/MT6835.c:192:10:get_counts_single_turn	1
+../Core/Src/MT6835.c:197:9:get_counts_multi_turn	1
+../Core/Src/MT6835.c:202:9:get_counts_full	1

@@ -1,0 +1,6 @@
+../Core/Src/mlx90393.c:14:26:MLX90393_MUX_Select	3
+../Core/Src/mlx90393.c:22:13:MLX90393_MUX_DeselectAll	1
+../Core/Src/mlx90393.c:26:19:MLX90393_Reset	3
+../Core/Src/mlx90393.c:48:19:MLX90393_ConfigureDefault	3
+../Core/Src/mlx90393.c:93:19:MLX90393_ReadMeasurement	6
+../Core/Src/mlx90393.c:144:19:MLX90393_MUX_Init	2

@@ -1,0 +1,3 @@
+../Core/Src/flex_encoder.c:13:19:FlexEncoder_Init	16	static
+../Core/Src/flex_encoder.c:17:19:FlexEncoder_UpdateAll	24	static
+../Core/Src/flex_encoder.c:31:19:FlexEncoder_Get	24	static

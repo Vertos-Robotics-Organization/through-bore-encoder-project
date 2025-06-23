@@ -1,0 +1,3 @@
+../Core/Src/userflash.c:15:17:UserFlash_GetPageAddress	1
+../Core/Src/userflash.c:32:19:UserFlash_WriteInt	4
+../Core/Src/userflash.c:98:10:UserFlash_ReadInt	1

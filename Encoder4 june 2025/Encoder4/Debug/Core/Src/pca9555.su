@@ -1,0 +1,6 @@
+../Core/Src/pca9555.c:11:19:PCA9555_WriteReg	32	static
+../Core/Src/pca9555.c:16:19:PCA9555_ReadReg	48	static
+../Core/Src/pca9555.c:23:19:PCA9555_Init	32	static
+../Core/Src/pca9555.c:31:19:PCA9555_SetPinDirection	24	static
+../Core/Src/pca9555.c:44:19:PCA9555_WritePin	24	static
+../Core/Src/pca9555.c:57:19:PCA9555_ReadPin	32	static

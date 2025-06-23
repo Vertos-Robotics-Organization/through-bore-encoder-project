@@ -1,0 +1,6 @@
+../Core/Src/pca9555.c:11:19:PCA9555_WriteReg	1
+../Core/Src/pca9555.c:16:19:PCA9555_ReadReg	2
+../Core/Src/pca9555.c:23:19:PCA9555_Init	1
+../Core/Src/pca9555.c:31:19:PCA9555_SetPinDirection	4
+../Core/Src/pca9555.c:44:19:PCA9555_WritePin	4
+../Core/Src/pca9555.c:57:19:PCA9555_ReadPin	2
