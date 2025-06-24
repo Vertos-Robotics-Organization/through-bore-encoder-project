@@ -98,16 +98,15 @@ volatile uint32_t lastHeartbeatTime = 0;
 #define HEARTBEAT_TIMEOUT 1000
 
 const int TARGET_LOOP_TIME = 10; // ms
-//Veclocity calculation veriables
-long multiTurnCounts;
-long lastMultiTurnCounts;
+//Velocity calculation variables
+int64_t lastMultiTurnCounts;
 double currentSystemTime;
 double lastSystemTime;
-long deltaRotations;
-long deltaTime;
-long sensorVelocity;
-long lastSensorVelocity;
-long sensorAccel;
+double deltaRotations;
+double deltaTime;
+double sensorVelocity;
+double lastSensorVelocity;
+double sensorAccel;
 
 int flexEncoderMode = 1;
 /* USER CODE END PV */
@@ -416,14 +415,12 @@ int main(void) {
 		TxData[7] = (uint8_t) (multiTurnCounts & 0xFF);
 
 		// Velocity and Acceleration calculations
-        //collect the current time
-        currentSystemTime = currentTime;
 
         // calculate the sensor velocity based on the difference in multi-turn counts and time
-        deltaRotations = ((long) multiTurnCounts - lastMultiTurnCounts) / CPR;
-        deltaTime = (long) (currentSystemTime - lastSystemTime);
+        deltaRotations = (double) ((double)(multiTurnCounts - lastMultiTurnCounts) / CPR);
+        deltaTime = (double) ((double) currentTime - lastSystemTime);
         if(deltaTime == 0) {
-        	deltaTime = 0.00000000000000001;
+        	deltaTime = 0.00000000000000001; // Prevent divide by zero scenarios
         }
 
         sensorVelocity = deltaRotations / deltaTime;
