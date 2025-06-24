@@ -1,11 +1,13 @@
-package com.vertos.encoder;
+package frc.VendorFiles.main.java.com.vertos.encoder;
 
 import edu.wpi.first.wpilibj.CAN;
+import edu.wpi.first.wpilibj.Timer;
 
 import java.util.ArrayList;
 import java.util.List;
 
 import edu.wpi.first.hal.CANData;
+
 
 public class CANSense {
     private CAN canDevice;
@@ -13,6 +15,9 @@ public class CANSense {
     private final int deviceID;
     private final boolean debugMode;
     private long multiTurnCounts;
+    private long lastMiltiTurnCounts;
+    private double currentSystemTime = 0.000000001;
+    private double lastSystemTime = 0.00000000001;
     
     // Default API ID for reading multi-turn counts
     private static final int DEFAULT_API_ID = 0;  // Replace with your appropriate default API ID.
@@ -87,12 +92,25 @@ public class CANSense {
     public long getMultiTurnCounts() {
         return multiTurnCounts;
     }
+    /**
+     * Returns the sensor velocity based on the multi-turn counts.
+     * This is a placeholder method and should be implemented based on the specific requirements of the sensor.
+     *
+     * @return The calculated sensor velocity.
+     */
+    public long getSensorVelocity() {
+        //collect the current time
+        currentSystemTime = Timer.getFPGATimestamp();
 
-    public double getSensorVelocity() {
-        double sensorVelocity = multiTurnCounts
-        // Placeholder for actual sensor velocity calculation logic
-        // This method should be implemented based on the specific requirements of the sensor.
-        return 0.0; // Replace with actual velocity calculation
+        // calculate the sensor velocity based on the difference in multi-turn counts and time
+        long deltaPosition = multiTurnCounts - lastMiltiTurnCounts;
+        long deltaTime = (long) Math.abs(currentSystemTime - lastSystemTime);
+        long sensorVelocity = deltaPosition / deltaTime;
+
+        // record the last values for the next call
+        lastMiltiTurnCounts = multiTurnCounts;
+        lastSystemTime = currentSystemTime;
+        return sensorVelocity;
     }
 
     /**

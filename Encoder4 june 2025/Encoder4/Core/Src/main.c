@@ -98,6 +98,16 @@ volatile uint32_t lastHeartbeatTime = 0;
 #define HEARTBEAT_TIMEOUT 1000
 
 const int TARGET_LOOP_TIME = 10; // ms
+//Veclocity calculation veriables
+long multiTurnCounts;
+long lastMultiTurnCounts;
+double currentSystemTime;
+double lastSystemTime;
+long deltaRotations;
+long deltaTime;
+long sensorVelocity;
+long lastSensorVelocity;
+long sensorAccel;
 
 int flexEncoderMode = 1;
 /* USER CODE END PV */
@@ -223,40 +233,39 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
   * @brief  The application entry point.
   * @retval int
   */
-int main(void)
-{
+int main(void) {
 
-  /* USER CODE BEGIN 1 */
+	/* USER CODE BEGIN 1 */
 	HAL_StatusTypeDef canStatus = HAL_ERROR;
 
-  /* USER CODE END 1 */
+	/* USER CODE END 1 */
 
-  /* MCU Configuration--------------------------------------------------------*/
+	/* MCU Configuration--------------------------------------------------------*/
 
-  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
-  HAL_Init();
+	/* Reset of all peripherals, Initializes the Flash interface and the Systick. */
+	HAL_Init();
 
-  /* USER CODE BEGIN Init */
-  /* USER CODE END Init */
+	/* USER CODE BEGIN Init */
+	/* USER CODE END Init */
 
-  /* Configure the system clock */
-  SystemClock_Config();
+	/* Configure the system clock */
+	SystemClock_Config();
 
-  /* USER CODE BEGIN SysInit */
-  /* USER CODE END SysInit */
+	/* USER CODE BEGIN SysInit */
+	/* USER CODE END SysInit */
 
-  /* Initialize all configured peripherals */
-  MX_GPIO_Init();
-  MX_FDCAN1_Init();
-  MX_SPI1_Init();
-  MX_ADC1_Init();
-  MX_TIM3_Init();
-  MX_TIM4_Init();
-  MX_I2C1_Init();
-  MX_USB_DRD_FS_PCD_Init();
-  MX_TIM2_Init();
-  MX_SPI2_Init();
-  /* USER CODE BEGIN 2 */
+	/* Initialize all configured peripherals */
+	MX_GPIO_Init();
+	MX_FDCAN1_Init();
+	MX_SPI1_Init();
+	MX_ADC1_Init();
+	MX_TIM3_Init();
+	MX_TIM4_Init();
+	MX_I2C1_Init();
+	MX_USB_DRD_FS_PCD_Init();
+	MX_TIM2_Init();
+	MX_SPI2_Init();
+	/* USER CODE BEGIN 2 */
 
 	// Flex Encoder
 	// Initialize the encoder system
@@ -352,14 +361,14 @@ int main(void)
 		HAL_Delay(10); // Allow stabilization
 		HAL_GPIO_WritePin(CAN_ENABLE_GPIO_Port, CAN_ENABLE_Pin, GPIO_PIN_SET); // EN HIGH
 	}
+	/* USER CODE END 2 */
 
-  /* USER CODE END 2 */
-
-  /* Infinite loop */
-  /* USER CODE BEGIN WHILE */
+	/* Infinite loop */
+	/* USER CODE BEGIN WHILE */
 	while (1) {
 		uint32_t currentTime = HAL_GetTick();
 
+		/* Flex Encoder Capabilities*/
 //		if (flexEncoderMode == 1) {
 //		    FlexEncoder_UpdateAll();
 //
@@ -370,67 +379,85 @@ int main(void)
 //		    int16_t x0 = data[0][0];  // X from sensor 0
 //		    int16_t z2 = data[2][2];  // Z from sensor 2
 //		    //HAL_Delay(2000);
-//
 //		}
 
-		{
 
-			if (towr == 1) {
-				towr = 0;
+		if (towr == 1) {
+			towr = 0;
+			// my page erase thing messes this up
+			HAL_FLASH_Unlock();
+			HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD,
+							  flashAddress,
+							  writeData
+			);
+			HAL_FLASH_Lock();
+		}
 
-				// my page erase thing messes thjis up
-				HAL_FLASH_Unlock();
-				HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, flashAddress,
-						writeData);
-				HAL_FLASH_Lock();
+		// Read the angle and set LED hue
+		//encAngle = mt6835_read_angle(&hspi1);
 
-			}
+		// Prepare data for CAN transmission
+		// Read the angle as counts
+		mt6835_update_counts(&hspi1);
+		get_counts_single_turn();
+		//mt6835_read_counts(&hspi1);
 
-			// Read the angle and set LED hue
-			//encAngle = mt6835_read_angle(&hspi1);
+		int64_t multiTurnCounts = get_counts_multi_turn();
+		uint32_t singleTurnCounts = get_counts_single_turn();
 
-			// Prepare data for CAN transmission
-			// Read the angle as counts
-			mt6835_update_counts(&hspi1);
-			get_counts_single_turn();
-			//mt6835_read_counts(&hspi1);
+		// Prepare 8-byte CAN message for the full 64-bit value
+		TxData[0] = (uint8_t) ((multiTurnCounts >> 56) & 0xFF);
+		TxData[1] = (uint8_t) ((multiTurnCounts >> 48) & 0xFF);
+		TxData[2] = (uint8_t) ((multiTurnCounts >> 40) & 0xFF);
+		TxData[3] = (uint8_t) ((multiTurnCounts >> 32) & 0xFF);
+		TxData[4] = (uint8_t) ((multiTurnCounts >> 24) & 0xFF);
+		TxData[5] = (uint8_t) ((multiTurnCounts >> 16) & 0xFF);
+		TxData[6] = (uint8_t) ((multiTurnCounts >> 8) & 0xFF);
+		TxData[7] = (uint8_t) (multiTurnCounts & 0xFF);
 
-			int64_t multiTurnCounts = get_counts_multi_turn();
-			uint32_t singleTurnCounts = get_counts_single_turn();
+		// Velocity and Acceleration calculations
+        //collect the current time
+        currentSystemTime = currentTime;
 
-			// Prepare 8-byte CAN message for the full 64-bit value
-			TxData[0] = (uint8_t) ((multiTurnCounts >> 56) & 0xFF);
-			TxData[1] = (uint8_t) ((multiTurnCounts >> 48) & 0xFF);
-			TxData[2] = (uint8_t) ((multiTurnCounts >> 40) & 0xFF);
-			TxData[3] = (uint8_t) ((multiTurnCounts >> 32) & 0xFF);
-			TxData[4] = (uint8_t) ((multiTurnCounts >> 24) & 0xFF);
-			TxData[5] = (uint8_t) ((multiTurnCounts >> 16) & 0xFF);
-			TxData[6] = (uint8_t) ((multiTurnCounts >> 8) & 0xFF);
-			TxData[7] = (uint8_t) (multiTurnCounts & 0xFF);
+        // calculate the sensor velocity based on the difference in multi-turn counts and time
+        deltaRotations = ((long) multiTurnCounts - lastMultiTurnCounts) / CPR;
+        deltaTime = (long) (currentSystemTime - lastSystemTime);
+        if(deltaTime == 0) {
+        	deltaTime = 0.00000000000000001;
+        }
 
-			// Add message to CAN Tx FIFO queue
-			TxHeader.Identifier = BASE_ID + device_id;
+        sensorVelocity = deltaRotations / deltaTime;
+        sensorAccel = ((sensorVelocity - lastSensorVelocity) / deltaTime);
 
-			// returns HAL_Error if fifo queue is full or CAN is not initialized correctly
-			// HAL_OK otherwise
-			canStatus = HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &TxHeader,
-					TxData);
+        // record the last values for the next call
+        lastMultiTurnCounts = multiTurnCounts;
+        lastSystemTime = currentSystemTime;
+        lastSensorVelocity = sensorVelocity;
 
-			//this is required for auto reboot when can bus disconnects
-			if (canStatus != HAL_OK) {
+		// Add message to CAN Tx FIFO queue
+		TxHeader.Identifier = BASE_ID + device_id;
 
-				if ((currentTime - lastHeartbeatTime) > HEARTBEAT_TIMEOUT) {
-					errorStatus = ENCODER_STATUS_NO_CANBUS;
-				} else {
-					errorStatus = ENCODER_STATUS_CAN_TX_FIFO_FULL;
-				}
-			}
+		// returns HAL_Error if fifo queue is full or CAN is not initialized correctly
+		// HAL_OK otherwise
+		canStatus = HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &TxHeader,
+				TxData);
 
-			if (handle_error_blink(errorStatus) == ENCODER_STATUS_OK) {
-				set_led_hue((float) singleTurnCounts / CPR, 1.0);
+		//this is required for auto reboot when can bus disconnects
+		if (canStatus != HAL_OK) {
+			if ((currentTime - lastHeartbeatTime) > HEARTBEAT_TIMEOUT) {
+				errorStatus = ENCODER_STATUS_NO_CANBUS;
+			} else {
+				errorStatus = ENCODER_STATUS_CAN_TX_FIFO_FULL;
 			}
 		}
 
+		if (handle_error_blink(errorStatus) == ENCODER_STATUS_OK) {
+			set_led_hue((float) singleTurnCounts / CPR, 1.0);
+		}
+
+
+
+		/* CAN Error reading */
 //		if (errorStatus == ENCODER_STATUS_OK)
 //		{
 //			// normal
@@ -439,9 +466,6 @@ int main(void)
 //		else if (errorStatus == ENCODER_STATUS_NO_CANBUS) {
 //
 //					pooptest = 1;
-//
-//
-//
 //		}
 //		// todo other errors
 //
@@ -457,7 +481,7 @@ int main(void)
 //		}
 //
 //
-
+		/* LED modes*/
 		if (proxMode) {
 			// Poll for ADC conversion completion
 			if (HAL_ADC_PollForConversion(&hadc1, 100) == HAL_OK) {
@@ -485,7 +509,7 @@ int main(void)
 	}
     /* USER CODE END WHILE */
 
-    /* USER CODE BEGIN 3 */
+  /* USER CODE BEGIN 3 */
   /* USER CODE END 3 */
 }
 

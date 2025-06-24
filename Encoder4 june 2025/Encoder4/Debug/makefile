@@ -60,8 +60,8 @@ all: main-build
 main-build: Encoder4.elf secondary-outputs
 
 # Tool invocations
-Encoder4.elf Encoder4.map: $(OBJS) $(USER_OBJS) C:\Users\Kynam\ Lenghiem\Documents\vertos\ files\Encoder4\ june\ 2025\Encoder4\STM32G0B1CEUX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
-	arm-none-eabi-gcc -o "Encoder4.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m0plus -T"C:\Users\Kynam Lenghiem\Documents\vertos files\Encoder4 june 2025\Encoder4\STM32G0B1CEUX_FLASH.ld" --specs=nosys.specs -Wl,-Map="Encoder4.map" -Wl,--gc-sections -static --specs=nano.specs -mfloat-abi=soft -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
+Encoder4.elf Encoder4.map: $(OBJS) $(USER_OBJS) C:\Users\Kynam\ Lenghiem\Documents\GitHub\through-bore-encoder-project\Encoder4\ june\ 2025\Encoder4\STM32G0B1CEUX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
+	arm-none-eabi-gcc -o "Encoder4.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m0plus -T"C:\Users\Kynam Lenghiem\Documents\GitHub\through-bore-encoder-project\Encoder4 june 2025\Encoder4\STM32G0B1CEUX_FLASH.ld" --specs=nosys.specs -Wl,-Map="Encoder4.map" -Wl,--gc-sections -static --specs=nano.specs -mfloat-abi=soft -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
 	@echo 'Finished building target: $@'
 	@echo ' '
 
