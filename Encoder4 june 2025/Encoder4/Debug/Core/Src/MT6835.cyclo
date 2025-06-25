@@ -5,3 +5,4 @@
 ../Core/Src/MT6835.c:192:10:get_counts_single_turn	1
 ../Core/Src/MT6835.c:197:9:get_counts_multi_turn	1
 ../Core/Src/MT6835.c:202:9:get_counts_full	1
+../Core/Src/MT6835.c:208:6:reset_counts	1

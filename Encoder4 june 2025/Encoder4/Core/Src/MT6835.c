@@ -205,6 +205,13 @@ int64_t get_counts_full(void)
     return ((int64_t)multiTurnSensorCounts << 21) + (int64_t)singleTurnSensorCounts;
 }
 
+void reset_counts(void)
+{
+    // Reset both single-turn and multi-turn counts
+    singleTurnSensorCounts = 0;
+    multiTurnSensorCounts = 0;
+}
+
 
 
 //uint32_t mt6835_read_counts(SPI_HandleTypeDef *hspi) {

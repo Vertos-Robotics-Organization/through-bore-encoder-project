@@ -238,7 +238,7 @@ int main(void) {
 	/* USER CODE BEGIN 1 */
 	HAL_StatusTypeDef positionCanStatus = HAL_ERROR;
 	HAL_StatusTypeDef velocityCanStatus = HAL_ERROR;
-  HAL_StatusTypeDef accelerationCanStatus = HAL_ERROR;
+	HAL_StatusTypeDef accelerationCanStatus = HAL_ERROR;
 
 	/* USER CODE END 1 */
 
@@ -476,9 +476,9 @@ int main(void) {
 		uint32_t baseCanId = BASE_ID + device_id;
 
 		// Position message: embed API ID 0 in the CAN arbitration ID
-		TxHeaderPosition.Identifier = baseCanId | (POSITION_API_ID << 6);      // API 0: baseCanId | 0x000
-		TxHeaderVelocity.Identifier = baseCanId | (VELOCITY_API_ID << 6);       // API 1: baseCanId | 0x400
-		TxHeaderAcceleration.Identifier = baseCanId | (ACCELERATION_API_ID << 6); // API 2: baseCanId | 0x800
+		TxHeaderPosition.Identifier = baseCanId | (POSITION_API_ID << 10);      // API 0: baseCanId | 0x000
+		TxHeaderVelocity.Identifier = baseCanId | (VELOCITY_API_ID << 10);       // API 1: baseCanId | 0x400
+		TxHeaderAcceleration.Identifier = baseCanId | (ACCELERATION_API_ID << 10); // API 2: baseCanId | 0x800
 
 		// returns HAL_Error if fifo queue is full or CAN is not initialized correctly
 		// HAL_OK otherwise

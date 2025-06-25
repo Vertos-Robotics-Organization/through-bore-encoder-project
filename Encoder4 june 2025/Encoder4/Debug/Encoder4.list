@@ -27,25 +27,25 @@ Idx Name          Size      VMA       LMA       File off  Algn
                   ALLOC
  11 .ARM.attributes 00000028  00000000  00000000  0000c130  2**0
                   CONTENTS, READONLY
- 12 .debug_info   0001a5ad  00000000  00000000  0000c158  2**0
+ 12 .debug_info   0001a5bf  00000000  00000000  0000c158  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 13 .debug_abbrev 00003b36  00000000  00000000  00026705  2**0
+ 13 .debug_abbrev 00003b4f  00000000  00000000  00026717  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 14 .debug_aranges 000019f0  00000000  00000000  0002a240  2**3
+ 14 .debug_aranges 000019f8  00000000  00000000  0002a268  2**3
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 15 .debug_rnglists 00001430  00000000  00000000  0002bc30  2**0
+ 15 .debug_rnglists 00001436  00000000  00000000  0002bc60  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 16 .debug_macro  00020ad8  00000000  00000000  0002d060  2**0
+ 16 .debug_macro  00020ad8  00000000  00000000  0002d096  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 17 .debug_line   0001f32d  00000000  00000000  0004db38  2**0
+ 17 .debug_line   0001f346  00000000  00000000  0004db6e  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 18 .debug_str    000d2483  00000000  00000000  0006ce65  2**0
+ 18 .debug_str    000d2490  00000000  00000000  0006ceb4  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 19 .comment      00000043  00000000  00000000  0013f2e8  2**0
+ 19 .comment      00000043  00000000  00000000  0013f344  2**0
                   CONTENTS, READONLY
- 20 .debug_frame  00006378  00000000  00000000  0013f32c  2**2
+ 20 .debug_frame  00006394  00000000  00000000  0013f388  2**2
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 21 .debug_line_str 00000079  00000000  00000000  001456a4  2**0
+ 21 .debug_line_str 00000079  00000000  00000000  0014571c  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
 
 Disassembly of section .text:
@@ -6390,6 +6390,12 @@ Disassembly of section .text:
 	...
 
 08003290 <calculate_crc_smbus>:
+
+/**
+ * Calculate CRC-8 SMBus using polynomial X^8 + X^2 + X + 1 (0x07)
+ */
+
+uint8_t calculate_crc_smbus(uint32_t raw_angle, uint8_t status) {
  8003290:	b580      	push	{r7, lr}
  8003292:	b088      	sub	sp, #32
  8003294:	af00      	add	r7, sp, #0
@@ -6397,6 +6403,7 @@ Disassembly of section .text:
  8003298:	000a      	movs	r2, r1
  800329a:	1cfb      	adds	r3, r7, #3
  800329c:	701a      	strb	r2, [r3, #0]
+    uint32_t data = ((raw_angle & 0x1FFFFF) << 3) | (status & 0x07); // Combine angle and status
  800329e:	687b      	ldr	r3, [r7, #4]
  80032a0:	00db      	lsls	r3, r3, #3
  80032a2:	4a2e      	ldr	r2, [pc, #184]	@ (800335c <calculate_crc_smbus+0xcc>)
@@ -6407,14 +6414,19 @@ Disassembly of section .text:
  80032ac:	400b      	ands	r3, r1
  80032ae:	4313      	orrs	r3, r2
  80032b0:	613b      	str	r3, [r7, #16]
+    uint8_t data_bytes[3] = {
+        (data >> 16) & 0xFF,
  80032b2:	693b      	ldr	r3, [r7, #16]
  80032b4:	0c1b      	lsrs	r3, r3, #16
+    uint8_t data_bytes[3] = {
  80032b6:	b2da      	uxtb	r2, r3
  80032b8:	210c      	movs	r1, #12
  80032ba:	187b      	adds	r3, r7, r1
  80032bc:	701a      	strb	r2, [r3, #0]
+        (data >> 8) & 0xFF,
  80032be:	693b      	ldr	r3, [r7, #16]
  80032c0:	0a1b      	lsrs	r3, r3, #8
+    uint8_t data_bytes[3] = {
  80032c2:	b2da      	uxtb	r2, r3
  80032c4:	187b      	adds	r3, r7, r1
  80032c6:	705a      	strb	r2, [r3, #1]
@@ -6422,13 +6434,20 @@ Disassembly of section .text:
  80032ca:	b2da      	uxtb	r2, r3
  80032cc:	187b      	adds	r3, r7, r1
  80032ce:	709a      	strb	r2, [r3, #2]
+        data & 0xFF
+    };
+
+    uint8_t crc = CRC8_INITIAL_VALUE;
  80032d0:	231f      	movs	r3, #31
  80032d2:	18fb      	adds	r3, r7, r3
  80032d4:	2200      	movs	r2, #0
  80032d6:	701a      	strb	r2, [r3, #0]
+
+    for (size_t i = 0; i < 3; i++) {
  80032d8:	2300      	movs	r3, #0
  80032da:	61bb      	str	r3, [r7, #24]
  80032dc:	e034      	b.n	8003348 <calculate_crc_smbus+0xb8>
+        crc ^= data_bytes[i]; // XOR the current data byte into the CRC
  80032de:	230c      	movs	r3, #12
  80032e0:	18fa      	adds	r2, r7, r3
  80032e2:	69bb      	ldr	r3, [r7, #24]
@@ -6440,17 +6459,20 @@ Disassembly of section .text:
  80032ee:	7812      	ldrb	r2, [r2, #0]
  80032f0:	404a      	eors	r2, r1
  80032f2:	701a      	strb	r2, [r3, #0]
+        for (uint8_t bit = 0; bit < 8; bit++) {
  80032f4:	2317      	movs	r3, #23
  80032f6:	18fb      	adds	r3, r7, r3
  80032f8:	2200      	movs	r2, #0
  80032fa:	701a      	strb	r2, [r3, #0]
  80032fc:	e01c      	b.n	8003338 <calculate_crc_smbus+0xa8>
+            if (crc & 0x80) {
  80032fe:	211f      	movs	r1, #31
  8003300:	187b      	adds	r3, r7, r1
  8003302:	781b      	ldrb	r3, [r3, #0]
  8003304:	b25b      	sxtb	r3, r3
  8003306:	2b00      	cmp	r3, #0
  8003308:	da0a      	bge.n	8003320 <calculate_crc_smbus+0x90>
+                crc = (crc << 1) ^ CRC8_POLYNOMIAL;
  800330a:	187b      	adds	r3, r7, r1
  800330c:	781b      	ldrb	r3, [r3, #0]
  800330e:	b25b      	sxtb	r3, r3
@@ -6462,12 +6484,15 @@ Disassembly of section .text:
  800331a:	187b      	adds	r3, r7, r1
  800331c:	701a      	strb	r2, [r3, #0]
  800331e:	e005      	b.n	800332c <calculate_crc_smbus+0x9c>
+            } else {
+                crc <<= 1;
  8003320:	231f      	movs	r3, #31
  8003322:	18fa      	adds	r2, r7, r3
  8003324:	18fb      	adds	r3, r7, r3
  8003326:	781b      	ldrb	r3, [r3, #0]
  8003328:	18db      	adds	r3, r3, r3
  800332a:	7013      	strb	r3, [r2, #0]
+        for (uint8_t bit = 0; bit < 8; bit++) {
  800332c:	2117      	movs	r1, #23
  800332e:	187b      	adds	r3, r7, r1
  8003330:	781a      	ldrb	r2, [r3, #0]
@@ -6479,15 +6504,22 @@ Disassembly of section .text:
  800333c:	781b      	ldrb	r3, [r3, #0]
  800333e:	2b07      	cmp	r3, #7
  8003340:	d9dd      	bls.n	80032fe <calculate_crc_smbus+0x6e>
+    for (size_t i = 0; i < 3; i++) {
  8003342:	69bb      	ldr	r3, [r7, #24]
  8003344:	3301      	adds	r3, #1
  8003346:	61bb      	str	r3, [r7, #24]
  8003348:	69bb      	ldr	r3, [r7, #24]
  800334a:	2b02      	cmp	r3, #2
  800334c:	d9c7      	bls.n	80032de <calculate_crc_smbus+0x4e>
+            }
+        }
+    }
+
+    return crc;
  800334e:	231f      	movs	r3, #31
  8003350:	18fb      	adds	r3, r7, r3
  8003352:	781b      	ldrb	r3, [r3, #0]
+}
  8003354:	0018      	movs	r0, r3
  8003356:	46bd      	mov	sp, r7
  8003358:	b008      	add	sp, #32
@@ -6495,19 +6527,34 @@ Disassembly of section .text:
  800335c:	00fffff8 	.word	0x00fffff8
 
 08003360 <mt6835_update_counts>:
+//    // If CRC fails, return 0 (indicating an error)
+//    return 0;
+//}
+
+int mt6835_update_counts(SPI_HandleTypeDef *hspi)
+{
  8003360:	b5f0      	push	{r4, r5, r6, r7, lr}
  8003362:	b089      	sub	sp, #36	@ 0x24
  8003364:	af00      	add	r7, sp, #0
  8003366:	6078      	str	r0, [r7, #4]
+    uint8_t data[4] = {0};
  8003368:	230c      	movs	r3, #12
  800336a:	18fb      	adds	r3, r7, r3
  800336c:	2200      	movs	r2, #0
  800336e:	601a      	str	r2, [r3, #0]
+    // Example command: high nibble might be operation, low nibble might be register
+    uint8_t command[2] = {
  8003370:	2108      	movs	r1, #8
  8003372:	187b      	adds	r3, r7, r1
  8003374:	22e8      	movs	r2, #232	@ 0xe8
  8003376:	0092      	lsls	r2, r2, #2
  8003378:	801a      	strh	r2, [r3, #0]
+        (uint8_t)(MT6835_OP_ANGLE << 4),
+        MT6835_REG_ANGLE1
+    };
+
+    // 1) Transmit the command
+    HAL_StatusTypeDef spiStatus = HAL_SPI_Transmit(hspi, command, 2, SPI_1_TIMEOUT);
  800337a:	221b      	movs	r2, #27
  800337c:	18be      	adds	r6, r7, r2
  800337e:	1879      	adds	r1, r7, r1
@@ -6517,14 +6564,20 @@ Disassembly of section .text:
  8003386:	f005 fbab 	bl	8008ae0 <HAL_SPI_Transmit>
  800338a:	0003      	movs	r3, r0
  800338c:	7033      	strb	r3, [r6, #0]
+    if (spiStatus != HAL_OK) {
  800338e:	221b      	movs	r2, #27
  8003390:	18bb      	adds	r3, r7, r2
  8003392:	781b      	ldrb	r3, [r3, #0]
  8003394:	2b00      	cmp	r3, #0
  8003396:	d002      	beq.n	800339e <mt6835_update_counts+0x3e>
+        return spiStatus; // HAL_TIMEOUT or HAL_ERROR
  8003398:	18bb      	adds	r3, r7, r2
  800339a:	781b      	ldrb	r3, [r3, #0]
  800339c:	e094      	b.n	80034c8 <mt6835_update_counts+0x168>
+    }
+
+    // 2) Receive the data (4 bytes)
+    spiStatus = HAL_SPI_Receive(hspi, data, 6, SPI_1_TIMEOUT);
  800339e:	221b      	movs	r2, #27
  80033a0:	18be      	adds	r6, r7, r2
  80033a2:	230c      	movs	r3, #12
@@ -6535,14 +6588,22 @@ Disassembly of section .text:
  80033ac:	f005 fcf8 	bl	8008da0 <HAL_SPI_Receive>
  80033b0:	0003      	movs	r3, r0
  80033b2:	7033      	strb	r3, [r6, #0]
+    if (spiStatus != HAL_OK) {
  80033b4:	221b      	movs	r2, #27
  80033b6:	18bb      	adds	r3, r7, r2
  80033b8:	781b      	ldrb	r3, [r3, #0]
  80033ba:	2b00      	cmp	r3, #0
  80033bc:	d002      	beq.n	80033c4 <mt6835_update_counts+0x64>
+        return spiStatus;
  80033be:	18bb      	adds	r3, r7, r2
  80033c0:	781b      	ldrb	r3, [r3, #0]
  80033c2:	e081      	b.n	80034c8 <mt6835_update_counts+0x168>
+    //  data[2] => low bits of angle (upper 5 bits) + status in lower 3 bits
+    //  data[3] => 8-bit CRC
+
+    // Extract raw 21-bit angle
+    //   (Note: mask with 0x1FFFFF as a safeguard)
+    uint32_t raw_counts = ((uint32_t)data[0] << 13) & 0x1FFFFF;
  80033c4:	200c      	movs	r0, #12
  80033c6:	183b      	adds	r3, r7, r0
  80033c8:	781b      	ldrb	r3, [r3, #0]
@@ -6550,6 +6611,7 @@ Disassembly of section .text:
  80033cc:	02db      	lsls	r3, r3, #11
  80033ce:	0adb      	lsrs	r3, r3, #11
  80033d0:	617b      	str	r3, [r7, #20]
+    raw_counts         |= ((uint32_t)data[1] << 5)  & 0x1FFFFF;
  80033d2:	183b      	adds	r3, r7, r0
  80033d4:	785b      	ldrb	r3, [r3, #1]
  80033d6:	015b      	lsls	r3, r3, #5
@@ -6558,6 +6620,7 @@ Disassembly of section .text:
  80033dc:	697a      	ldr	r2, [r7, #20]
  80033de:	4313      	orrs	r3, r2
  80033e0:	617b      	str	r3, [r7, #20]
+    raw_counts         |= (((uint32_t)data[2] >> 3) & 0x1F);
  80033e2:	183b      	adds	r3, r7, r0
  80033e4:	789b      	ldrb	r3, [r3, #2]
  80033e6:	08db      	lsrs	r3, r3, #3
@@ -6568,6 +6631,9 @@ Disassembly of section .text:
  80033f0:	697a      	ldr	r2, [r7, #20]
  80033f2:	4313      	orrs	r3, r2
  80033f4:	617b      	str	r3, [r7, #20]
+
+    // Extract status
+    uint8_t statusBits = data[2] & 0x07; // lower 3 bits
  80033f6:	183b      	adds	r3, r7, r0
  80033f8:	789a      	ldrb	r2, [r3, #2]
  80033fa:	2313      	movs	r3, #19
@@ -6575,11 +6641,14 @@ Disassembly of section .text:
  80033fe:	2107      	movs	r1, #7
  8003400:	400a      	ands	r2, r1
  8003402:	701a      	strb	r2, [r3, #0]
+    // Extract CRC
+    uint8_t crc_received   = data[3];
  8003404:	2212      	movs	r2, #18
  8003406:	18bb      	adds	r3, r7, r2
  8003408:	183a      	adds	r2, r7, r0
  800340a:	78d2      	ldrb	r2, [r2, #3]
  800340c:	701a      	strb	r2, [r3, #0]
+    uint8_t crc_calculated = calculate_crc_smbus(raw_counts, statusBits);
  800340e:	2111      	movs	r1, #17
  8003410:	187e      	adds	r6, r7, r1
  8003412:	2313      	movs	r3, #19
@@ -6591,6 +6660,9 @@ Disassembly of section .text:
  800341e:	f7ff ff37 	bl	8003290 <calculate_crc_smbus>
  8003422:	0003      	movs	r3, r0
  8003424:	7033      	strb	r3, [r6, #0]
+
+    // Verify CRC
+    if (crc_received != crc_calculated) {
  8003426:	2212      	movs	r2, #18
  8003428:	18ba      	adds	r2, r7, r2
  800342a:	2111      	movs	r1, #17
@@ -6599,8 +6671,13 @@ Disassembly of section .text:
  8003430:	781b      	ldrb	r3, [r3, #0]
  8003432:	429a      	cmp	r2, r3
  8003434:	d001      	beq.n	800343a <mt6835_update_counts+0xda>
+        return HAL_ERROR;  // CRC mismatch
  8003436:	2301      	movs	r3, #1
  8003438:	e046      	b.n	80034c8 <mt6835_update_counts+0x168>
+    }
+
+    // Update warnings
+    rotationOverspeedWarning = (statusBits & 0x01) ? 1 : 0;
  800343a:	2113      	movs	r1, #19
  800343c:	187b      	adds	r3, r7, r1
  800343e:	781b      	ldrb	r3, [r3, #0]
@@ -6609,6 +6686,7 @@ Disassembly of section .text:
  8003444:	b2da      	uxtb	r2, r3
  8003446:	4b22      	ldr	r3, [pc, #136]	@ (80034d0 <mt6835_update_counts+0x170>)
  8003448:	701a      	strb	r2, [r3, #0]
+    weakMagneticFieldWarning = (statusBits & 0x02) ? 1 : 0;
  800344a:	187b      	adds	r3, r7, r1
  800344c:	781b      	ldrb	r3, [r3, #0]
  800344e:	105b      	asrs	r3, r3, #1
@@ -6618,6 +6696,7 @@ Disassembly of section .text:
  8003456:	b2da      	uxtb	r2, r3
  8003458:	4b1e      	ldr	r3, [pc, #120]	@ (80034d4 <mt6835_update_counts+0x174>)
  800345a:	701a      	strb	r2, [r3, #0]
+    underVoltageWarning      = (statusBits & 0x04) ? 1 : 0;
  800345c:	187b      	adds	r3, r7, r1
  800345e:	781b      	ldrb	r3, [r3, #0]
  8003460:	109b      	asrs	r3, r3, #2
@@ -6627,32 +6706,51 @@ Disassembly of section .text:
  8003468:	b2da      	uxtb	r2, r3
  800346a:	4b1b      	ldr	r3, [pc, #108]	@ (80034d8 <mt6835_update_counts+0x178>)
  800346c:	701a      	strb	r2, [r3, #0]
+
+    // 1) Adjust 'delta' for rollovers
+    static uint32_t previousSingleTurn = 0;  // track last 21-bit reading
+    int32_t delta = (int32_t)raw_counts - (int32_t)previousSingleTurn;
  800346e:	697a      	ldr	r2, [r7, #20]
  8003470:	4b1a      	ldr	r3, [pc, #104]	@ (80034dc <mt6835_update_counts+0x17c>)
  8003472:	681b      	ldr	r3, [r3, #0]
  8003474:	1ad3      	subs	r3, r2, r3
  8003476:	61fb      	str	r3, [r7, #28]
+
+    // If delta is too large => we rolled under
+    if (delta > HALF_RANGE) {
  8003478:	69fa      	ldr	r2, [r7, #28]
  800347a:	2380      	movs	r3, #128	@ 0x80
  800347c:	035b      	lsls	r3, r3, #13
  800347e:	429a      	cmp	r2, r3
  8003480:	dd05      	ble.n	800348e <mt6835_update_counts+0x12e>
+        // e.g., new reading is near 0, old reading near max => negative rollover
+        delta -= FULL_RANGE;
  8003482:	69fb      	ldr	r3, [r7, #28]
  8003484:	4a16      	ldr	r2, [pc, #88]	@ (80034e0 <mt6835_update_counts+0x180>)
  8003486:	4694      	mov	ip, r2
  8003488:	4463      	add	r3, ip
  800348a:	61fb      	str	r3, [r7, #28]
  800348c:	e009      	b.n	80034a2 <mt6835_update_counts+0x142>
+    }
+    // If delta is too negative => we rolled over
+    else if (delta < -HALF_RANGE) {
  800348e:	69fb      	ldr	r3, [r7, #28]
  8003490:	4a14      	ldr	r2, [pc, #80]	@ (80034e4 <mt6835_update_counts+0x184>)
  8003492:	4293      	cmp	r3, r2
  8003494:	da05      	bge.n	80034a2 <mt6835_update_counts+0x142>
+        // e.g., new reading near max, old reading near 0 => positive rollover
+        delta += FULL_RANGE;
  8003496:	69fb      	ldr	r3, [r7, #28]
  8003498:	2280      	movs	r2, #128	@ 0x80
  800349a:	0392      	lsls	r2, r2, #14
  800349c:	4694      	mov	ip, r2
  800349e:	4463      	add	r3, ip
  80034a0:	61fb      	str	r3, [r7, #28]
+    }
+
+    // 2) Accumulate the delta into 'multiTurnSensorCounts'
+    //    so that multiTurnSensorCounts now holds the absolute total.
+    multiTurnSensorCounts += delta;
  80034a2:	69fb      	ldr	r3, [r7, #28]
  80034a4:	001c      	movs	r4, r3
  80034a6:	17db      	asrs	r3, r3, #31
@@ -6665,13 +6763,20 @@ Disassembly of section .text:
  80034b4:	490c      	ldr	r1, [pc, #48]	@ (80034e8 <mt6835_update_counts+0x188>)
  80034b6:	600a      	str	r2, [r1, #0]
  80034b8:	604b      	str	r3, [r1, #4]
+
+    previousSingleTurn = raw_counts;
  80034ba:	4b08      	ldr	r3, [pc, #32]	@ (80034dc <mt6835_update_counts+0x17c>)
  80034bc:	697a      	ldr	r2, [r7, #20]
  80034be:	601a      	str	r2, [r3, #0]
+    singleTurnSensorCounts = raw_counts;
  80034c0:	4b0a      	ldr	r3, [pc, #40]	@ (80034ec <mt6835_update_counts+0x18c>)
  80034c2:	697a      	ldr	r2, [r7, #20]
  80034c4:	601a      	str	r2, [r3, #0]
+
+    // If we got here => success
+    return HAL_OK;
  80034c6:	2300      	movs	r3, #0
+}
  80034c8:	0018      	movs	r0, r3
  80034ca:	46bd      	mov	sp, r7
  80034cc:	b009      	add	sp, #36	@ 0x24
@@ -6686,10 +6791,15 @@ Disassembly of section .text:
  80034ec:	2000014c 	.word	0x2000014c
 
 080034f0 <get_counts_single_turn>:
+
+uint32_t get_counts_single_turn(void)
+{
  80034f0:	b580      	push	{r7, lr}
  80034f2:	af00      	add	r7, sp, #0
+    return singleTurnSensorCounts;
  80034f4:	4b02      	ldr	r3, [pc, #8]	@ (8003500 <get_counts_single_turn+0x10>)
  80034f6:	681b      	ldr	r3, [r3, #0]
+}
  80034f8:	0018      	movs	r0, r3
  80034fa:	46bd      	mov	sp, r7
  80034fc:	bd80      	pop	{r7, pc}
@@ -6697,11 +6807,16 @@ Disassembly of section .text:
  8003500:	2000014c 	.word	0x2000014c
 
 08003504 <get_counts_multi_turn>:
+
+int64_t get_counts_multi_turn(void)
+{
  8003504:	b580      	push	{r7, lr}
  8003506:	af00      	add	r7, sp, #0
+    return multiTurnSensorCounts;
  8003508:	4b03      	ldr	r3, [pc, #12]	@ (8003518 <get_counts_multi_turn+0x14>)
  800350a:	681a      	ldr	r2, [r3, #0]
  800350c:	685b      	ldr	r3, [r3, #4]
+}
  800350e:	0010      	movs	r0, r2
  8003510:	0019      	movs	r1, r3
  8003512:	46bd      	mov	sp, r7
@@ -7140,7 +7255,7 @@ int main(void) {
  80037d0:	18fb      	adds	r3, r7, r3
  80037d2:	2201      	movs	r2, #1
  80037d4:	701a      	strb	r2, [r3, #0]
-  HAL_StatusTypeDef accelerationCanStatus = HAL_ERROR;
+	HAL_StatusTypeDef accelerationCanStatus = HAL_ERROR;
  80037d6:	2365      	movs	r3, #101	@ 0x65
  80037d8:	18fb      	adds	r3, r7, r3
  80037da:	2201      	movs	r2, #1
@@ -7767,23 +7882,23 @@ int main(void) {
  8003bd6:	62fb      	str	r3, [r7, #44]	@ 0x2c
 
 		// Position message: embed API ID 0 in the CAN arbitration ID
-		TxHeaderPosition.Identifier = baseCanId | (POSITION_API_ID << 6);      // API 0: baseCanId | 0x000
+		TxHeaderPosition.Identifier = baseCanId | (POSITION_API_ID << 10);      // API 0: baseCanId | 0x000
  8003bd8:	2300      	movs	r3, #0
- 8003bda:	019a      	lsls	r2, r3, #6
+ 8003bda:	029a      	lsls	r2, r3, #10
  8003bdc:	6afb      	ldr	r3, [r7, #44]	@ 0x2c
  8003bde:	431a      	orrs	r2, r3
  8003be0:	4b4e      	ldr	r3, [pc, #312]	@ (8003d1c <main+0x55c>)
  8003be2:	601a      	str	r2, [r3, #0]
-		TxHeaderVelocity.Identifier = baseCanId | (VELOCITY_API_ID << 6);       // API 1: baseCanId | 0x400
+		TxHeaderVelocity.Identifier = baseCanId | (VELOCITY_API_ID << 10);       // API 1: baseCanId | 0x400
  8003be4:	2301      	movs	r3, #1
- 8003be6:	019a      	lsls	r2, r3, #6
+ 8003be6:	029a      	lsls	r2, r3, #10
  8003be8:	6afb      	ldr	r3, [r7, #44]	@ 0x2c
  8003bea:	431a      	orrs	r2, r3
  8003bec:	4b4c      	ldr	r3, [pc, #304]	@ (8003d20 <main+0x560>)
  8003bee:	601a      	str	r2, [r3, #0]
-		TxHeaderAcceleration.Identifier = baseCanId | (ACCELERATION_API_ID << 6); // API 2: baseCanId | 0x800
+		TxHeaderAcceleration.Identifier = baseCanId | (ACCELERATION_API_ID << 10); // API 2: baseCanId | 0x800
  8003bf0:	2302      	movs	r3, #2
- 8003bf2:	019a      	lsls	r2, r3, #6
+ 8003bf2:	029a      	lsls	r2, r3, #10
  8003bf4:	6afb      	ldr	r3, [r7, #44]	@ 0x2c
  8003bf6:	431a      	orrs	r2, r3
  8003bf8:	4b4a      	ldr	r3, [pc, #296]	@ (8003d24 <main+0x564>)

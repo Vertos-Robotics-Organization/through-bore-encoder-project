@@ -21,6 +21,7 @@ public class CANSense {
     // Variables and Constants
     private final int deviceID;
     private final boolean debugMode;
+    private final int baseCanID; // Base CAN ID for the device, calculated from deviceID
     private long multiTurnCounts; // Multi-turn counts for backward compatibility
     private double absoluteRotations;
     private double relativeRotations;
@@ -33,8 +34,8 @@ public class CANSense {
     
     // Default API ID for reading multi-turn counts
     private static final int POSITION_API_ID = 0;  // API ID for position data
-    private static final int VELOCITY_API_ID = 1; // API ID for velocity data
-    private static final int ACCELERATION_API_ID = 2; // API ID for acceleration data
+    private static final int VELOCITY_API_ID = 16; // API ID for velocity data
+    private static final int ACCELERATION_API_ID = 32; // API ID for acceleration data
     private static final int QUERY_API_ID = 1;   // API ID for querying devices
 
     /**
@@ -49,9 +50,9 @@ public class CANSense {
         
         // Calculate the base CAN ID to match your C code
         int baseCanId = 0xA080000 + deviceID;  // Must match C code: BASE_ID + device_id
-        
+        this.baseCanID = baseCanId;
         // Initialize CAN device with the correct base ID
-        this.canDevice = new CAN(baseCanId, 8, 10);
+        this.canDevice = new CAN(deviceID, 8, 10);
         this.canData = new CANData();
         this.scheduler = Executors.newScheduledThreadPool(1);
         start();
@@ -74,13 +75,13 @@ public class CANSense {
     public void encoderThread() {
         
         // Read absolute rotations (8 bytes)
-        if (canDevice.readPacketLatest(POSITION_API_ID, canData)) {
+        if (canDevice.readPacketLatest((POSITION_API_ID), canData)) {
             byte[] receivedData = canData.data;
         
             if (canData.length >= 8) {
                 // Extract 64-bit double from 8 bytes (big-endian)
                 long absoluteBits = readCanPacket(receivedData);
-                // Convert bits to double - perfect precision!
+                // Convert bits to double
                 this.absoluteRotations = Double.longBitsToDouble(absoluteBits);
                 // Calculate relative rotations from absolute (0.0 to 1.0)
                 this.relativeRotations = absoluteRotations - Math.floor(absoluteRotations);
@@ -88,16 +89,16 @@ public class CANSense {
                 multiTurnCounts = (long)(absoluteRotations * CountsPerRevolution);
         
                 if (debugMode) {
-                    // System.out.printf(
-                    //     "Device %d: absoluteRotations = %.12f, relativeRotations = %.12f%n",
-                    //     deviceID, absoluteRotations, relativeRotations
-                    // );
+                    System.out.printf(
+                        "Device %d: absoluteRotations = %.12f, relativeRotations = %.12f%n",
+                        deviceID, absoluteRotations, relativeRotations
+                    );
                 }
             }
         }
 
         // Read velocity (8 bytes)  
-        if (canDevice.readPacketLatest(VELOCITY_API_ID, canData)) {
+        if (canDevice.readPacketLatest((VELOCITY_API_ID), canData)) {
             byte[] receivedData = canData.data;
             if (canData.length >= 8) {
                 // Extract 64-bit velocity double
@@ -119,7 +120,7 @@ public class CANSense {
 
 
         // Read Accel (8 bytes)  
-        if (canDevice.readPacketLatest(ACCELERATION_API_ID, canData)) {
+        if (canDevice.readPacketLatest((ACCELERATION_API_ID), canData)) {
             byte[] receivedData = canData.data;
 
             if (canData.length >= 8) {
