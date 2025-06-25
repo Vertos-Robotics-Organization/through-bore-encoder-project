@@ -89,7 +89,6 @@ public class CANSense {
     }
 
     public double getSensorVelocity() {
-        double sensorVelocity = multiTurnCounts
         // Placeholder for actual sensor velocity calculation logic
         // This method should be implemented based on the specific requirements of the sensor.
         return 0.0; // Replace with actual velocity calculation

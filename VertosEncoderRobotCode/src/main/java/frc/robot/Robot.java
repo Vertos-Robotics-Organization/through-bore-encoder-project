@@ -13,7 +13,7 @@ import frc.VendorFiles.main.java.com.vertos.encoder.CANSense;
 public class Robot extends TimedRobot {
   private Command m_autonomousCommand;
 
- private CANSense encoder = new CANSense(1, true);
+ private CANSense encoder = new CANSense(0, true);
 
   private final RobotContainer m_robotContainer;
 
@@ -24,10 +24,9 @@ public class Robot extends TimedRobot {
   @Override
   public void robotPeriodic() {
     CommandScheduler.getInstance().run();
-    encoder.readMultiTurnCounts();
-
-    SmartDashboard.putNumber("Encoder Multi-Turn Counts", encoder.getMultiTurnCounts());
-    //SmartDashboard.putNumber("Encoder Velocity", encoder.getSensorVelocity());
+    SmartDashboard.putNumber("Encoder Absolute Rotations", encoder.getAbsRotations());
+    SmartDashboard.putNumber("Encoder Velocity", encoder.getSensorVelocityRPS());
+    SmartDashboard.putNumber("Encoder Accel", encoder.getSensorAccelerationRPS2());
   }
 
   @Override

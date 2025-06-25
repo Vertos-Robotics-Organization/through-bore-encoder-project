@@ -5,112 +5,193 @@ import edu.wpi.first.wpilibj.Timer;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 import edu.wpi.first.hal.CANData;
 
 
 public class CANSense {
+    // Objects for handling CAN communication and data
+    private ScheduledExecutorService scheduler;
     private CAN canDevice;
     private CANData canData;
+
+    // Variables and Constants
     private final int deviceID;
     private final boolean debugMode;
-    private long multiTurnCounts;
-    private long lastMiltiTurnCounts;
-    private double currentSystemTime = 0.000000001;
-    private double lastSystemTime = 0.00000000001;
+    private long multiTurnCounts; // Multi-turn counts for backward compatibility
+    private double absoluteRotations;
+    private double relativeRotations;
+    private double velocityRPS;
+    private double accelerationRPS2;  // Added acceleration
+    private final double CountsPerRevolution = 2097152.0; // 2 ^ 21
+    
+    // Fixed-point scale factor (must match C code)
+    private static final double FIXED_POINT_SCALE = 65536.0;
     
     // Default API ID for reading multi-turn counts
-    private static final int DEFAULT_API_ID = 0;  // Replace with your appropriate default API ID.
+    private static final int POSITION_API_ID = 0;  // API ID for position data
+    private static final int VELOCITY_API_ID = 1; // API ID for velocity data
+    private static final int ACCELERATION_API_ID = 2; // API ID for acceleration data
     private static final int QUERY_API_ID = 1;   // API ID for querying devices
 
+    /**
+     * Constructor for CANSense.
+     *
+     * @param deviceID   The CAN device ID for the encoder.
+     * @param debugMode  If true, enables debug output to the console.
+     */
     public CANSense(int deviceID, boolean debugMode) {
         this.deviceID = deviceID;
         this.debugMode = debugMode;
-        this.canDevice = new CAN(deviceID, 8, 10);
+        
+        // Calculate the base CAN ID to match your C code
+        int baseCanId = 0xA080000 + deviceID;  // Must match C code: BASE_ID + device_id
+        
+        // Initialize CAN device with the correct base ID
+        this.canDevice = new CAN(baseCanId, 8, 10);
         this.canData = new CANData();
+        this.scheduler = Executors.newScheduledThreadPool(1);
+        start();
     }
 
     /**
-     * Reads the latest CAN packet using the default API ID, parses 8 bytes
-     * into a 64-bit raw count, and stores it in `multiTurnCounts`.
-     *
-     * If no valid packet is received or data is &lt; 8 bytes, `multiTurnCounts` is not updated.
+     * The main thread that reads the encoder data.
+     * This method is called periodically to read the latest CAN packets for position and velocity.
      */
-    public void readMultiTurnCounts() {
-        // Use the default API ID for reading multi-turn counts
-        int apiID = DEFAULT_API_ID;
+    public void start() {
+        scheduler.scheduleAtFixedRate(() -> {
+            encoderThread(); // Call the method to read encoder data
+        }, 0, 10, TimeUnit.MILLISECONDS); // Poll every 10ms
+    }
 
-        // Attempt to read the latest packet for apiID
-        if (canDevice.readPacketLatest(apiID, canData)) {
+    public void stop() {
+        scheduler.shutdown(); // Stop the loop
+    }
+
+    public void encoderThread() {
+        
+        // Read absolute rotations (8 bytes)
+        if (canDevice.readPacketLatest(POSITION_API_ID, canData)) {
             byte[] receivedData = canData.data;
-
-            // We need at least 8 bytes to parse a 64-bit long
+        
             if (canData.length >= 8) {
-                // Combine the 8 bytes into one 64-bit long
-                long rawCounts = ((long)(receivedData[0] & 0xFF) << 56)
-                               | ((long)(receivedData[1] & 0xFF) << 48)
-                               | ((long)(receivedData[2] & 0xFF) << 40)
-                               | ((long)(receivedData[3] & 0xFF) << 32)
-                               | ((long)(receivedData[4] & 0xFF) << 24)
-                               | ((long)(receivedData[5] & 0xFF) << 16)
-                               | ((long)(receivedData[6] & 0xFF) <<  8)
-                               | ((long)(receivedData[7] & 0xFF));
-
-                // Store it in our field
-                multiTurnCounts = rawCounts;
-
-                // Optional debug info
+                // Extract 64-bit double from 8 bytes (big-endian)
+                long absoluteBits = readCanPacket(receivedData);
+                // Convert bits to double - perfect precision!
+                this.absoluteRotations = Double.longBitsToDouble(absoluteBits);
+                // Calculate relative rotations from absolute (0.0 to 1.0)
+                this.relativeRotations = absoluteRotations - Math.floor(absoluteRotations);
+                // Calculate equivalent multi-turn counts for backward compatibility
+                multiTurnCounts = (long)(absoluteRotations * CountsPerRevolution);
+        
                 if (debugMode) {
-                    System.out.printf(
-                        "Device %d: multiTurnCounts = %d (API_ID=0x%X, Data=%s)%n",
-                        deviceID, multiTurnCounts, apiID, bytesToHex(receivedData)
-                    );
+                    // System.out.printf(
+                    //     "Device %d: absoluteRotations = %.12f, relativeRotations = %.12f%n",
+                    //     deviceID, absoluteRotations, relativeRotations
+                    // );
                 }
-            } else {
-                // Not enough data to parse 64 bits
+            }
+        }
+
+        // Read velocity (8 bytes)  
+        if (canDevice.readPacketLatest(VELOCITY_API_ID, canData)) {
+            byte[] receivedData = canData.data;
+            if (canData.length >= 8) {
+                // Extract 64-bit velocity double
+                long velocityBits = readCanPacket(receivedData);
+                // Convert bits to double
+                velocityRPS = Double.longBitsToDouble(velocityBits);
+
                 if (debugMode) {
                     System.out.printf(
-                        "Device %d: Received CAN packet with only %d bytes; need 8.%n",
-                        deviceID, canData.length
+                        "Device %d: velocity = %.12f RPS%n",
+                        deviceID, velocityRPS
                     );
                 }
             }
         } else {
-            // No CAN packet received
-            if (debugMode) {
-                System.out.printf("Device %d: No CAN message received for API_ID=0x%X.%n", 
-                                  deviceID, apiID);
+            // Can Not found
+            errorNoCanPacketDebug(VELOCITY_API_ID);
+        }
+
+
+        // Read Accel (8 bytes)  
+        if (canDevice.readPacketLatest(ACCELERATION_API_ID, canData)) {
+            byte[] receivedData = canData.data;
+
+            if (canData.length >= 8) {
+                // Extract 64-bit velocity double
+                long accelBits = readCanPacket(receivedData);
+                // Convert bits to double
+                accelerationRPS2 = Double.longBitsToDouble(accelBits);
+                if (debugMode) {
+                    System.out.printf(
+                        "Device %d: acceleration = %.12f RPS%n",
+                        deviceID, accelerationRPS2
+                    );
+                }
             }
+        } else {
+            // Can Not found
+            errorNoCanPacketDebug(ACCELERATION_API_ID);
         }
     }
 
-    /**
-     * Returns the last stored raw multi-turn counts.
-     *
-     * @return The last known value of multiTurnCounts.
+    /*
+     * 
+     *  Read Can Packet data
+     * 
      */
-    public long getMultiTurnCounts() {
-        return multiTurnCounts;
+    private long readCanPacket(byte[] receivedData) {
+        long recievedBits = ((long)(receivedData[0] & 0xFF) << 56)
+                        | ((long)(receivedData[1] & 0xFF) << 48)
+                        | ((long)(receivedData[2] & 0xFF) << 40)
+                        | ((long)(receivedData[3] & 0xFF) << 32)
+                        | ((long)(receivedData[4] & 0xFF) << 24)
+                        | ((long)(receivedData[5] & 0xFF) << 16)
+                        | ((long)(receivedData[6] & 0xFF) << 8)
+                        | ((long)(receivedData[7] & 0xFF));
+        return recievedBits;
     }
+
+
+    public double getAbsRotations() {
+        return absoluteRotations;
+    }
+
+    public double getRotations() {
+        return relativeRotations;
+    }
+
     /**
-     * Returns the sensor velocity based on the multi-turn counts.
-     * This is a placeholder method and should be implemented based on the specific requirements of the sensor.
+     * Returns the sensor velocity in rotations per second.
      *
-     * @return The calculated sensor velocity.
+     * @return The sensor velocity in RPS as a double.
      */
+    public double getSensorVelocityRPS() {
+        return velocityRPS;
+    }
+
+    /**
+     * Returns the sensor acceleration in rotations per second squared.
+     *
+     * @return The sensor acceleration in RPS² as a double.
+     */
+    public double getSensorAccelerationRPS2() {
+        return accelerationRPS2;
+    }
+
+    /**
+     * Alternative method for backward compatibility.
+     * @deprecated Use getSensorVelocityRPS() instead for clearer units.
+     */
+    @Deprecated
     public long getSensorVelocity() {
-        //collect the current time
-        currentSystemTime = Timer.getFPGATimestamp();
-
-        // calculate the sensor velocity based on the difference in multi-turn counts and time
-        long deltaPosition = multiTurnCounts - lastMiltiTurnCounts;
-        long deltaTime = (long) Math.abs(currentSystemTime - lastSystemTime);
-        long sensorVelocity = deltaPosition / deltaTime;
-
-        // record the last values for the next call
-        lastMiltiTurnCounts = multiTurnCounts;
-        lastSystemTime = currentSystemTime;
-        return sensorVelocity;
+        // Return velocity as scaled long for backward compatibility
+        return (long)(velocityRPS * FIXED_POINT_SCALE);
     }
 
     /**
@@ -127,9 +208,7 @@ public class CANSense {
                         deviceID, apiID, bytesToHex(data));
             }
         } catch (Exception e) {
-            if (debugMode) {
-                System.err.printf("Device %d: Failed to send CAN Packet: %s%n", deviceID, e.getMessage());
-            }
+            errorNoCanPacketDebug(apiID);
         }
     }
 
@@ -177,5 +256,22 @@ public class CANSense {
             sb.append(String.format("%02X ", b));
         }
         return sb.toString().trim();
+    }
+
+    private void errorNoCanPacketDebug(int apiID) {
+        // No CAN packet received
+        if (debugMode) {
+            System.out.printf("Device %d: Error occurred while reading CAN data for API ID %d.%n", deviceID, apiID);
+        }
+    }
+
+    private void errorByteLengthDebug() {
+        // Not enough data to parse 64 bits
+        if (debugMode) {
+            System.out.printf(
+                "Device %d: Received CAN packet with only %d bytes; need 8.%n",
+                deviceID, canData.length
+            );
+        }
     }
 }
