@@ -21,12 +21,20 @@ public class CANSense {
     // Variables and Constants
     private final int deviceID;
     private final boolean debugMode;
-    private final int baseCanID; // Base CAN ID for the device, calculated from deviceID
     private long multiTurnCounts; // Multi-turn counts for backward compatibility
     private double absoluteRotations;
     private double relativeRotations;
     private double velocityRPS;
     private double accelerationRPS2;  // Added acceleration
+
+    private boolean isStickyFault_Hardware = false;
+    private boolean isStickyFault_Undervoltage = false;
+    private boolean isStickyFault_BootDuringEnable = false;
+    private boolean isStickyFault_BadMagnet = false;
+    private boolean isStickyFault_CANGeneral = false;
+
+
+    // Constants for the encoder
     private final double CountsPerRevolution = 2097152.0; // 2 ^ 21
     
     // Fixed-point scale factor (must match C code)
@@ -37,6 +45,11 @@ public class CANSense {
     private static final int VELOCITY_API_ID = 16; // API ID for velocity data
     private static final int ACCELERATION_API_ID = 32; // API ID for acceleration data
     private static final int QUERY_API_ID = 1;   // API ID for querying devices
+    private static final int HARDWARE_FAULT_API_ID = 48; // API ID for hardware fault
+    private static final int UNDERVOLTAGE_FAULT_API_ID = 49; // API ID for undervoltage fault
+    private static final int BOOT_DURING_ENABLE_FAULT_API_ID = 50; // API ID for boot during enable fault
+    private static final int BAD_MAGNET_FAULT_API_ID = 51; // API ID for magnet fault
+    private static final int CAN_GENERAL_FAULT_API_ID = 52; // API ID for general CAN fault
 
     /**
      * Constructor for CANSense.
@@ -50,9 +63,8 @@ public class CANSense {
         
         // Calculate the base CAN ID to match your C code
         int baseCanId = 0xA080000 + deviceID;  // Must match C code: BASE_ID + device_id
-        this.baseCanID = baseCanId;
         // Initialize CAN device with the correct base ID
-        this.canDevice = new CAN(deviceID, 8, 10);
+        this.canDevice = new CAN(baseCanId, 8, 10);
         this.canData = new CANData();
         this.scheduler = Executors.newScheduledThreadPool(1);
         start();
@@ -62,13 +74,13 @@ public class CANSense {
      * The main thread that reads the encoder data.
      * This method is called periodically to read the latest CAN packets for position and velocity.
      */
-    public void start() {
+    private void start() {
         scheduler.scheduleAtFixedRate(() -> {
             encoderThread(); // Call the method to read encoder data
         }, 0, 10, TimeUnit.MILLISECONDS); // Poll every 10ms
     }
 
-    public void stop() {
+    private void stop() {
         scheduler.shutdown(); // Stop the loop
     }
 
@@ -79,9 +91,7 @@ public class CANSense {
             byte[] receivedData = canData.data;
         
             if (canData.length >= 8) {
-                // Extract 64-bit double from 8 bytes (big-endian)
                 long absoluteBits = readCanPacket(receivedData);
-                // Convert bits to double
                 this.absoluteRotations = Double.longBitsToDouble(absoluteBits);
                 // Calculate relative rotations from absolute (0.0 to 1.0)
                 this.relativeRotations = absoluteRotations - Math.floor(absoluteRotations);
@@ -101,9 +111,7 @@ public class CANSense {
         if (canDevice.readPacketLatest((VELOCITY_API_ID), canData)) {
             byte[] receivedData = canData.data;
             if (canData.length >= 8) {
-                // Extract 64-bit velocity double
                 long velocityBits = readCanPacket(receivedData);
-                // Convert bits to double
                 velocityRPS = Double.longBitsToDouble(velocityBits);
 
                 if (debugMode) {
@@ -139,30 +147,29 @@ public class CANSense {
             // Can Not found
             errorNoCanPacketDebug(ACCELERATION_API_ID);
         }
+
     }
 
-    /*
-     * 
-     *  Read Can Packet data
-     * 
+
+    //---------------------------------------------------------------------------------------
+    // Getters for the encoder data
+    //---------------------------------------------------------------------------------------
+    /**
+     * Returns the multi-turn counts for backward compatibility.
+     * This is calculated as absolute rotations multiplied by CountsPerRevolution.
+     *
+     * @return The multi-turn counts as a long.
      */
-    private long readCanPacket(byte[] receivedData) {
-        long recievedBits = ((long)(receivedData[0] & 0xFF) << 56)
-                        | ((long)(receivedData[1] & 0xFF) << 48)
-                        | ((long)(receivedData[2] & 0xFF) << 40)
-                        | ((long)(receivedData[3] & 0xFF) << 32)
-                        | ((long)(receivedData[4] & 0xFF) << 24)
-                        | ((long)(receivedData[5] & 0xFF) << 16)
-                        | ((long)(receivedData[6] & 0xFF) << 8)
-                        | ((long)(receivedData[7] & 0xFF));
-        return recievedBits;
-    }
-
-
     public double getAbsRotations() {
         return absoluteRotations;
     }
 
+    /**
+     * Returns the relative rotations (0.0 to 1.0) based on absolute rotations.
+     * This is calculated as absolute rotations minus the floor of absolute rotations.
+     *
+     * @return The relative rotations as a double.
+     */
     public double getRotations() {
         return relativeRotations;
     }
@@ -185,16 +192,242 @@ public class CANSense {
         return accelerationRPS2;
     }
 
-    /**
-     * Alternative method for backward compatibility.
-     * @deprecated Use getSensorVelocityRPS() instead for clearer units.
-     */
-    @Deprecated
-    public long getSensorVelocity() {
-        // Return velocity as scaled long for backward compatibility
-        return (long)(velocityRPS * FIXED_POINT_SCALE);
+    public double getInputVoltage() {
+        // Placeholder for supply voltage, not implemented
+        return 0.0;
     }
 
+    public double getMagnetHealth() {
+        return 0.0; // Placeholder for magnet health, not implemented
+    }
+
+    /**
+     * Determines whether the CAN device is connected by sending and receiving packets.
+     *
+     * @return True if the device responds to a query, false otherwise.
+     */
+    public boolean isConnected() {
+        // Send a query packet to the device
+        byte[] queryData = new byte[8]; // Example query data, can be adjusted as needed
+        sendPacket(QUERY_API_ID, queryData);
+
+        // Attempt to read a response packet
+        boolean packetReceived = canDevice.readPacketNew(QUERY_API_ID, canData);
+
+        if (debugMode) {
+            if (packetReceived) {
+                System.out.printf("Device %d: Connection verified via CAN packet response.%n", deviceID);
+            } else {
+                System.out.printf("Device %d: No response received; device may not be connected.%n", deviceID);
+            }
+        }
+
+        return packetReceived;
+    }
+
+    /**
+     * Retrieves the current hardware fault status.
+     *
+     * @return True if a hardware fault is detected, false otherwise.
+     */
+    public boolean getFault_Hardware() {
+        boolean isFault = readFaultStatus(HARDWARE_FAULT_API_ID);
+        // Update sticky fault status if a hardware fault is detected
+        if(!isStickyFault_Hardware) {
+            isStickyFault_Hardware = isFault;
+        }
+        return isFault;
+    }
+
+    /**
+     * Retrieves the current undervoltage fault status.
+     *
+     * @return True if an undervoltage fault is detected, false otherwise.
+     */
+    public boolean getFault_Undervoltage() {
+        boolean isFault = readFaultStatus(UNDERVOLTAGE_FAULT_API_ID);
+        if (!isStickyFault_Undervoltage) {
+            isStickyFault_Undervoltage = isFault;
+        }
+        return isFault;
+    }
+
+    /**
+     * Retrieves the current boot during enable fault status.
+     *
+     * @return True if a boot during enable fault is detected, false otherwise.
+     */
+    public boolean getFault_BootDuringEnable() {
+        boolean isFault = readFaultStatus(BOOT_DURING_ENABLE_FAULT_API_ID);
+        if (!isStickyFault_BootDuringEnable) {
+            isStickyFault_BootDuringEnable = isFault;
+        }
+        return isFault;
+    }
+
+    /**
+     * Retrieves the current magnet fault status.
+     *
+     * @return True if a magnet fault is detected, false otherwise.
+     */
+    public boolean getFault_BadMagnet() {
+        boolean isFault = readFaultStatus(BAD_MAGNET_FAULT_API_ID);
+        if (!isStickyFault_BadMagnet) {
+            isStickyFault_BadMagnet = isFault;
+        }
+        return isFault;
+    }
+
+    /**
+     * Retrieves the current general CAN fault status.
+     *
+     * @return True if a general CAN fault is detected, false otherwise.
+     */
+    public boolean getFault_CANGeneral() {
+        boolean isFault = readFaultStatus(CAN_GENERAL_FAULT_API_ID);
+        if (!isStickyFault_CANGeneral) {
+            isStickyFault_CANGeneral = isFault;
+        }
+        return isFault;
+    }
+
+    /**
+     * Retrieves the sticky hardware fault status.
+     *
+     * @return True if a sticky hardware fault has been detected, false otherwise.
+     */
+    public boolean getStickyFault_Hardware() {
+        return isStickyFault_Hardware;
+    }
+
+    /**
+     * Retrieves the sticky undervoltage fault status.
+     *
+     * @return True if a sticky undervoltage fault has been detected, false otherwise.
+     */
+    public boolean getStickyFault_Undervoltage() {
+        return isStickyFault_Undervoltage;
+    }
+
+    /**
+     * Retrieves the sticky boot during enable fault status.
+     *
+     * @return True if a sticky boot during enable fault has been detected, false otherwise.
+     */
+    public boolean getStickyFault_BootDuringEnable() {
+        return isStickyFault_BootDuringEnable;
+    }
+
+    /**
+     * Retrieves the sticky magnet fault status.
+     *
+     * @return True if a sticky magnet fault has been detected, false otherwise.
+     */
+    public boolean getStickyFault_BadMagnet() {
+        return isStickyFault_BadMagnet;
+    }
+
+    /**
+     * Retrieves the sticky general CAN fault status.
+     *
+     * @return True if a sticky general CAN fault has been detected, false otherwise.
+     */
+    public boolean getStickyFault_CANGeneral() {
+        return isStickyFault_CANGeneral;
+    }
+
+
+    /**
+     * Resets all sticky fault flags to false.
+     * This method allows the user to clear all sticky fault statuses.
+     */
+    public void resetStickyFaults() {
+        isStickyFault_Hardware = false;
+        isStickyFault_Undervoltage = false;
+        isStickyFault_BootDuringEnable = false;
+        isStickyFault_BadMagnet = false;
+
+        if (debugMode) {
+            System.out.println("All sticky faults have been reset.");
+        }
+    }
+
+    /**
+     * Helper method to read fault status from the CAN device.
+     *
+     * @param apiID The API ID for the fault status.
+     * @return True if the fault is detected, false otherwise.
+     */
+    private boolean readFaultStatus(int apiID) {
+        if (canDevice.readPacketLatest(apiID, canData)) {
+            byte[] receivedData = canData.data;
+            if (canData.length >= 1) {
+                return (receivedData[0] & 0x01) != 0; // Check the first byte for fault status
+            } else {
+                errorByteLengthDebug();
+            }
+        } else {
+            errorNoCanPacketDebug(apiID);
+        }
+        return false;
+    }
+
+    //-------------------------------------------------------------------------------------------
+    // Senders
+    //-------------------------------------------------------------------------------------------
+    /**
+     * Sends a command to zero the encoder.
+     */
+    public void zeroEncoder() {
+        // Send a command to zero the encoder
+        // This method can be implemented based on specific requirements
+        // For now, it does nothing
+        if (debugMode) {
+            System.out.printf("Device %d: Zeroing encoder (not implemented).%n", deviceID);
+        }
+    }
+
+    /**
+     * Inverts the direction of the encoder.
+     */
+    public void invertDirection() {
+        // Invert the direction of the encoder
+        // This method can be implemented based on specific requirements
+        // For now, it does nothing
+        if (debugMode) {
+            System.out.printf("Device %d: Inverting direction (not implemented).%n", deviceID);
+        }
+    }
+
+    /**
+     * Sets the position of the encoder.
+     * @param position
+     */
+    public void setPosition(double position) {
+        setPosition(position, 0.2);
+    }
+
+    public void setPosition(double position, double timeout) {
+        // Set the position of the encoder
+        // This method can be implemented based on specific requirements
+        // For now, it does nothing
+        if (debugMode) {
+            System.out.printf("Device %d: Setting position to %d (not implemented).%n", deviceID, position);
+        }
+    }
+
+    public void resetFactoryDefaults() {
+        // Reset the encoder to factory defaults
+        // This method can be implemented based on specific requirements
+        // For now, it does nothing
+        if (debugMode) {
+            System.out.printf("Device %d: Resetting to factory defaults (not implemented).%n", deviceID);
+        }
+    }
+
+    //-------------------------------------------------------------------------------------------------------------------
+    // Helpers
+    //-------------------------------------------------------------------------------------------------------------------
     /**
      * Sends a CAN packet to the device.
      *
@@ -211,6 +444,25 @@ public class CANSense {
         } catch (Exception e) {
             errorNoCanPacketDebug(apiID);
         }
+    }
+
+    /**
+     * Reads a CAN packet and converts it to a 64-bit long value.
+     * This method assumes the data is in big-endian format.
+     *
+     * @param receivedData The byte array containing the received CAN packet data.
+     * @return The 64-bit long value representing the received data.
+     */
+    private long readCanPacket(byte[] receivedData) {
+        long recievedBits = ((long)(receivedData[0] & 0xFF) << 56)
+                        | ((long)(receivedData[1] & 0xFF) << 48)
+                        | ((long)(receivedData[2] & 0xFF) << 40)
+                        | ((long)(receivedData[3] & 0xFF) << 32)
+                        | ((long)(receivedData[4] & 0xFF) << 24)
+                        | ((long)(receivedData[5] & 0xFF) << 16)
+                        | ((long)(receivedData[6] & 0xFF) << 8)
+                        | ((long)(receivedData[7] & 0xFF));
+        return recievedBits;
     }
 
     /**
