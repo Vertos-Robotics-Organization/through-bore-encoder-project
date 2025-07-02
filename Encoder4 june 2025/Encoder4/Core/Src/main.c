@@ -1,4 +1,3 @@
-/* USER CODE BEGIN Header */
 /**
  ******************************************************************************
  * @file           : main.c
@@ -78,9 +77,8 @@ const int CPR = 2097152; // 2 ^ 21
 const int BASE_ID = 0xA080000;
 int device_id_index = 0x40;
 
-const int POSITION_API_ID = 0;      // API ID for position data
-const int VELOCITY_API_ID = 1;  // API ID for velocity/acceleration data
-const int ACCELERATION_API_ID = 2; // API ID for acceleration data
+const int POSITION_API_ID = 0;          // API ID for position data (8 bytes - 64-bit counts)
+const int VELOCITY_ACCEL_API_ID = 1;   // API ID for combined velocity/acceleration data (4 bytes)
 
 int device_id = 0;
 int pooptest = 1;
@@ -99,18 +97,21 @@ volatile uint32_t lastHeartbeatTime = 0;
 // Define the timeout period (e.g., 1000 ms = 1 second)
 #define HEARTBEAT_TIMEOUT 1000
 
-const int TARGET_LOOP_TIME = 10; // ms
-//Velocity calculation variables
-int64_t lastMultiTurnCounts;
-double currentSystemTime;
-double lastSystemTimeMillisec;
-double deltaRotations;
-double deltaTimeSeconds;
-double sensorVelocityRPS;
-double lastSensorVelocityRPS;
-double sensorAccel;
+// Constants for scaling to 16-bit values
+const double VELOCITY_SCALE_FACTOR = 1000.0;     // Scale velocity to fit in 16-bit range
+const double ACCELERATION_SCALE_FACTOR = 100.0;  // Scale acceleration to fit in 16-bit range
 
-int flexEncoderMode = 1;
+const int TARGET_LOOP_TIME = 10; // ms
+//Advanced derivative calculation variables
+double sensorVelocityRPS = 0.0;
+double sensorAccel = 0.0;
+// Optimized integer-based velocity/acceleration calculation variables
+int64_t lastMultiTurnCounts = 0;
+uint32_t lastSystemTimeMillisec = 0;
+int32_t lastVelocityCPS = 0;        // Last velocity in counts per second
+int32_t lastAccelCPS2 = 0;          // Last acceleration in counts per second squared
+int16_t velocityCountsScaled = 0;   // Final scaled velocity for CAN transmission
+int16_t accelCountsScaled = 0;      // Final scaled acceleration for CAN transmission
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -134,16 +135,14 @@ uint8_t buffer[64] = { 0 };
 uint32_t cdcRxLen = 0;
 
 FDCAN_TxHeaderTypeDef TxHeaderPosition;
-FDCAN_TxHeaderTypeDef TxHeaderVelocity;
-FDCAN_TxHeaderTypeDef TxHeaderAcceleration;
+FDCAN_TxHeaderTypeDef TxHeaderVelocityAccel;
 
 FDCAN_RxHeaderTypeDef RxHeader;
 
 //uint32_t TxMailbox[4];
 
-uint8_t TxDataPosition[64] = { 0 };
-uint8_t TxDataVelocity[8] = { 0 };
-uint8_t TxDataAcceleration[8] = { 0 };
+uint8_t TxDataPosition[8] = { 0 };
+uint8_t TxDataVelocityAccel[4] = { 0 };  // Combined velocity and acceleration (4 bytes)
 uint8_t RxData[64] = { 0 };
 int indx = 0;
 uint8_t count = 0;
@@ -237,8 +236,7 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
 int main(void) {
 	/* USER CODE BEGIN 1 */
 	HAL_StatusTypeDef positionCanStatus = HAL_ERROR;
-	HAL_StatusTypeDef velocityCanStatus = HAL_ERROR;
-	HAL_StatusTypeDef accelerationCanStatus = HAL_ERROR;
+	HAL_StatusTypeDef velocityAccelCanStatus = HAL_ERROR;
 
 	/* USER CODE END 1 */
 
@@ -325,13 +323,10 @@ int main(void) {
 		TxHeaderPosition.Identifier = (uint32_t) readData;
 	}
 
-	// Configure position message header
-	txHeaderConfigure(&TxHeaderPosition);  // Note the & (address-of operator)
-	// Configure velocity message header
-	txHeaderConfigure(&TxHeaderVelocity);  // Note the & (address-of operator)
-	// Configure velocity message header
-	txHeaderConfigure(&TxHeaderAcceleration);  // Note the & (address-of operator)
-
+	// Configure position message header (8 bytes)
+	txHeaderConfigure(&TxHeaderPosition);
+	// Configure velocity/acceleration message header (4 bytes)
+	txHeaderConfigureVelocityAccel(&TxHeaderVelocityAccel);
 
 	// ADC
 	HAL_ADC_Start(&hadc1);
@@ -396,101 +391,91 @@ int main(void) {
 		get_counts_single_turn();
 		//mt6835_read_counts(&hspi1);
 
-		// Use union for safe double-to-bytes conversion
-		union {
-		    double d;
-		    uint8_t bytes[8];
-		} absoluteUnion, relativeUnion, velocityUnion, accelUnion;
-
 		//----------------------------------------------------------------------------------------------------------
 		// Read the multi-turn counts and single-turn counts
 		//----------------------------------------------------------------------------------------------------------
 		int64_t multiTurnCounts = get_counts_multi_turn();
 		uint32_t singleTurnCounts = get_counts_single_turn();
 
-		// Calculate absolute rotations (total rotations including multi-turn)
-		double absoluteRotations = (double) multiTurnCounts / (double) CPR;
+		// Pack multi-turn counts directly as 64-bit value (8 bytes, big-endian)
+		TxDataPosition[0] = (uint8_t)(multiTurnCounts >> 56);  // MSB
+		TxDataPosition[1] = (uint8_t)(multiTurnCounts >> 48);
+		TxDataPosition[2] = (uint8_t)(multiTurnCounts >> 40);
+		TxDataPosition[3] = (uint8_t)(multiTurnCounts >> 32);
+		TxDataPosition[4] = (uint8_t)(multiTurnCounts >> 24);
+		TxDataPosition[5] = (uint8_t)(multiTurnCounts >> 16);
+		TxDataPosition[6] = (uint8_t)(multiTurnCounts >> 8);
+		TxDataPosition[7] = (uint8_t)(multiTurnCounts);        // LSB
 
-		// Calculate relative rotations (single turn position as fraction 0.0 to 1.0)
-		double relativeRotations = (double) singleTurnCounts / (double) CPR;
+		int flexEncoderMode = 1;
 
-		// Direct assignment
-		absoluteUnion.d = absoluteRotations;
-		relativeUnion.d = relativeRotations;
-
-
-		// Pack absolute rotations (8 bytes, big-endian)
-		TxDataPosition[0] = absoluteUnion.bytes[7];  // MSB
-		TxDataPosition[1] = absoluteUnion.bytes[6];
-		TxDataPosition[2] = absoluteUnion.bytes[5];
-		TxDataPosition[3] = absoluteUnion.bytes[4];
-		TxDataPosition[4] = absoluteUnion.bytes[3];
-		TxDataPosition[5] = absoluteUnion.bytes[2];
-		TxDataPosition[6] = absoluteUnion.bytes[1];
-		TxDataPosition[7] = absoluteUnion.bytes[0];  // LSB
 
 		//-----------------------------------------------------------------------------------------------------------
-		// Velocity and Acceleration calculations
+		// Backwards difference velocity and acceleration calculations in counts (no floating point)
 		//-----------------------------------------------------------------------------------------------------------
-		// calculate the sensor velocity based on the difference in multi-turn counts and time
-		deltaRotations = ((double)(multiTurnCounts - lastMultiTurnCounts) / (double) CPR);
-		deltaTimeSeconds = (double) ((currentTimeMillisec - lastSystemTimeMillisec) / 1000);
-		if(deltaTimeSeconds == 0) {
-		  deltaTimeSeconds = 0.0001; // Prevent divide by zero scenarios and do not update velocity/accel variables
+		uint32_t deltaTimeMs = currentTimeMillisec - lastSystemTimeMillisec;
+
+		if (deltaTimeMs == 0) {
+			// Skip calculations if no time has passed
+			deltaTimeMs = 1; // Minimum 1ms to prevent divide by zero
 		} else {
-		  //Final calculation
-		  sensorVelocityRPS = deltaRotations / deltaTimeSeconds;
-		  sensorAccel = ((sensorVelocityRPS - lastSensorVelocityRPS) / deltaTimeSeconds);
+			// Calculate velocity using backwards difference: v(n) = (x(n) - x(n-1)) / dt
+			int64_t deltaCounts = multiTurnCounts - lastMultiTurnCounts;
 
-		  // record the last values for the next call
-		  lastMultiTurnCounts = multiTurnCounts;
-		  lastSystemTimeMillisec = currentTimeMillisec;
-		  lastSensorVelocityRPS = sensorVelocityRPS;
+			// Calculate RAW velocity in counts per second using backwards difference
+			int32_t rawVelocityCPS = (int32_t)((deltaCounts * 1000) / deltaTimeMs);
+
+			// Calculate RAW acceleration using backwards difference: a(n) = (v(n) - v(n-1)) / dt
+			// This uses the current velocity and the previous filtered velocity
+			int32_t rawAccelCPS2 = ((rawVelocityCPS - lastVelocityCPS) * 1000) / (int32_t)deltaTimeMs;
+
+			// Apply low-pass filter to the RAW values (not the stored filtered values)
+			// Equivalent to alpha = 0.75 (3/4 old + 1/4 new)
+			int32_t filteredVelocityCPS = (lastVelocityCPS * 3 + rawVelocityCPS) >> 2;
+			int32_t filteredAccelCPS2 = (lastAccelCPS2 * 3 + rawAccelCPS2) >> 2;
+
+			// Scale down to 16-bit range and clamp
+			int16_t velocityScaled = (int16_t)((filteredVelocityCPS > 32767) ? 32767 :
+											 (filteredVelocityCPS < -32768) ? -32768 : filteredVelocityCPS);
+			int16_t accelScaled = (int16_t)((filteredAccelCPS2 > 32767) ? 32767 :
+										   (filteredAccelCPS2 < -32768) ? -32768 : filteredAccelCPS2);
+
+			// Update stored values for next iteration (backwards difference approach)
+			lastMultiTurnCounts = multiTurnCounts;        // Store current position for next backwards diff
+			lastSystemTimeMillisec = currentTimeMillisec; // Store current time for next backwards diff
+			lastVelocityCPS = filteredVelocityCPS;        // Store filtered velocity for next acceleration calc
+			lastAccelCPS2 = filteredAccelCPS2;           // Store filtered acceleration
+
+			// Store final scaled values for CAN transmission
+			velocityCountsScaled = velocityScaled;
+			accelCountsScaled = accelScaled;
 		}
 
-		velocityUnion.d = sensorVelocityRPS;
-		accelUnion.d = sensorAccel;
 
-		// Pack velocity (8 bytes)
-		TxDataVelocity[0] = velocityUnion.bytes[7];
-		TxDataVelocity[1] = velocityUnion.bytes[6];
-		TxDataVelocity[2] = velocityUnion.bytes[5];
-		TxDataVelocity[3] = velocityUnion.bytes[4];
-		TxDataVelocity[4] = velocityUnion.bytes[3];
-		TxDataVelocity[5] = velocityUnion.bytes[2];
-		TxDataVelocity[6] = velocityUnion.bytes[1];
-		TxDataVelocity[7] = velocityUnion.bytes[0];
-
-		// Pack acceleration (8 bytes)
-		TxDataAcceleration[0] = accelUnion.bytes[7];
-		TxDataAcceleration[1] = accelUnion.bytes[6];
-		TxDataAcceleration[2] = accelUnion.bytes[5];
-		TxDataAcceleration[3] = accelUnion.bytes[4];
-		TxDataAcceleration[4] = accelUnion.bytes[3];
-		TxDataAcceleration[5] = accelUnion.bytes[2];
-		TxDataAcceleration[6] = accelUnion.bytes[1];
-		TxDataAcceleration[7] = accelUnion.bytes[0];
+		// Pack combined velocity and acceleration (4 bytes total: 2 bytes velocity + 2 bytes acceleration)
+		// Values are now in counts per second (velocity) and counts per second squared (acceleration)
+		// Big-endian format
+		TxDataVelocityAccel[0] = (uint8_t)(velocityCountsScaled >> 8);    // Velocity MSB
+		TxDataVelocityAccel[1] = (uint8_t)(velocityCountsScaled);         // Velocity LSB
+		TxDataVelocityAccel[2] = (uint8_t)(accelCountsScaled >> 8);       // Acceleration MSB
+		TxDataVelocityAccel[3] = (uint8_t)(accelCountsScaled);            // Acceleration LSB
 
 		// Add message to CAN Tx FIFO queue // Base id all the stuff set by first // device id can id teams are familiar with //
 		// Calculate base CAN ID for this device
 		uint32_t baseCanId = BASE_ID + device_id;
 
-		// Position message: embed API ID 0 in the CAN arbitration ID
-		TxHeaderPosition.Identifier = baseCanId | (POSITION_API_ID << 10);      // API 0: baseCanId | 0x000
-		TxHeaderVelocity.Identifier = baseCanId | (VELOCITY_API_ID << 10);       // API 1: baseCanId | 0x400
-		TxHeaderAcceleration.Identifier = baseCanId | (ACCELERATION_API_ID << 10); // API 2: baseCanId | 0x800
+		// Position message: embed API ID 0 in the CAN arbitration ID (8 bytes - raw counts)
+		TxHeaderPosition.Identifier = baseCanId | (POSITION_API_ID << 10);           // API 0: baseCanId | 0x000
+		// Combined velocity/acceleration message: embed API ID 16 in the CAN arbitration ID (4 bytes)
+		TxHeaderVelocityAccel.Identifier = baseCanId | (VELOCITY_ACCEL_API_ID << 10); // API 16: baseCanId | 0x4000
 
 		// returns HAL_Error if fifo queue is full or CAN is not initialized correctly
 		// HAL_OK otherwise
 		positionCanStatus = HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &TxHeaderPosition, TxDataPosition);
-		velocityCanStatus = HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &TxHeaderVelocity, TxDataVelocity);
-		accelerationCanStatus = HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &TxHeaderAcceleration, TxDataAcceleration);
-
+		velocityAccelCanStatus = HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &TxHeaderVelocityAccel, TxDataVelocityAccel);
 
 		//this is required for auto reboot when can bus disconnects
-		if (positionCanStatus != HAL_OK || 
-			velocityCanStatus != HAL_OK ||
-			accelerationCanStatus != HAL_OK) {
+		if (positionCanStatus != HAL_OK || velocityAccelCanStatus != HAL_OK) {
 			if ((currentTimeMillisec - lastHeartbeatTime) > HEARTBEAT_TIMEOUT) {
 				errorStatus = ENCODER_STATUS_NO_CANBUS;
 			} else {
@@ -1089,6 +1074,17 @@ void txHeaderConfigure(FDCAN_TxHeaderTypeDef* header) {  // Note the pointer!
     header->IdType = FDCAN_EXTENDED_ID;
     header->TxFrameType = FDCAN_DATA_FRAME;
     header->DataLength = FDCAN_DLC_BYTES_8;
+    header->ErrorStateIndicator = FDCAN_ESI_ACTIVE;
+    header->BitRateSwitch = FDCAN_BRS_OFF;
+    header->FDFormat = FDCAN_CLASSIC_CAN;    //dont use fd FDCAN_FD_CAN;
+    header->TxEventFifoControl = FDCAN_NO_TX_EVENTS;
+    header->MessageMarker = 0;
+}
+
+void txHeaderConfigureVelocityAccel(FDCAN_TxHeaderTypeDef* header) {  // Note the pointer!
+    header->IdType = FDCAN_EXTENDED_ID;
+    header->TxFrameType = FDCAN_DATA_FRAME;
+    header->DataLength = FDCAN_DLC_BYTES_4;  // 4 bytes for combined velocity/acceleration
     header->ErrorStateIndicator = FDCAN_ESI_ACTIVE;
     header->BitRateSwitch = FDCAN_BRS_OFF;
     header->FDFormat = FDCAN_CLASSIC_CAN;    //dont use fd FDCAN_FD_CAN;

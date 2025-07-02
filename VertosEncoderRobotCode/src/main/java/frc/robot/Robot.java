@@ -8,21 +8,23 @@ import edu.wpi.first.wpilibj.TimedRobot;
 import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
 import edu.wpi.first.wpilibj2.command.Command;
 import edu.wpi.first.wpilibj2.command.CommandScheduler;
-import frc.VendorFiles.main.java.com.vertos.encoder.CANSense;
+import frc.VendorFiles.main.java.com.vertos.encoder.ParentCANSense;
 
 public class Robot extends TimedRobot {
   private Command m_autonomousCommand;
 
- private CANSense encoder = new CANSense(0, true);
+ private ParentCANSense encoder = new ParentCANSense(0, true);
 
   private final RobotContainer m_robotContainer;
 
   public Robot() {
     m_robotContainer = new RobotContainer();
+    encoder.start();
   }
 
   @Override
   public void robotPeriodic() {
+    
     CommandScheduler.getInstance().run();
     SmartDashboard.putNumber("Encoder Absolute Rotations", encoder.getAbsRotations());
     SmartDashboard.putNumber("Encoder Velocity", encoder.getSensorVelocityRPS());
