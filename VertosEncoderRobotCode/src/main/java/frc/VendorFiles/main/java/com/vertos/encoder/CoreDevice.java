@@ -20,7 +20,7 @@ public class CoreDevice {
 
     // Variables and Constants
     private final int deviceID;
-    private final boolean debugMode;
+    private boolean debugMode;
 
     private static final int QUERY_API_ID = 1;   // API ID for querying devices
     
@@ -35,10 +35,8 @@ public class CoreDevice {
         this.deviceID = deviceID;
         this.debugMode = debugMode;
         
-        // Calculate the base CAN ID to match your C code
-        int baseCanId = 0xA080000 + deviceID;  // Must match C code: BASE_ID + device_id
         // Initialize CAN device with the correct base ID
-        this.canDevice = new CAN(baseCanId, 17, 10);
+        this.canDevice = new CAN(deviceID, 17, 10);
         this.canData = new CANData();
         this.scheduler = Executors.newScheduledThreadPool(1);
     }
@@ -118,12 +116,12 @@ public class CoreDevice {
         }, apiID, -999L);
     }
 
-    public int pollCanDevice16BitSigned(int apiID, int offset) {
+    public int pollCanDevice32BitSigned(int apiID, int offset) {
         return attemptCanOperation(() -> {
             if (canDevice.readPacketLatest(apiID, canData)) {
                 byte[] receivedData = canData.data;
-                if (canData.length >= offset + 2) {
-                    return readCanPacketAs16BitSigned(receivedData, offset);
+                if (canData.length >= offset + 4) {
+                    return readCanPacketAs32BitSigned(receivedData, offset);
                 } else {
                     errorByteLengthDebug();
                     return null;
@@ -132,6 +130,25 @@ public class CoreDevice {
             return null;
         }, apiID, -999);
     }
+
+    /**
+     * Reads a 32-bit signed integer from a CAN packet at the specified offset.
+     * This method assumes the data is in big-endian format.
+     *
+     * @param receivedData The byte array containing the received CAN packet data.
+     * @param offset The offset in the byte array where the 32-bit value starts.
+     * @return The 32-bit signed integer value.
+     */
+    private int readCanPacketAs32BitSigned(byte[] receivedData, int offset) {
+        // Combine four bytes into a 32-bit signed integer (big-endian)
+        int value = ((receivedData[offset] & 0xFF) << 24)
+                    | ((receivedData[offset + 1] & 0xFF) << 16)
+                    | ((receivedData[offset + 2] & 0xFF) << 8)
+                    | (receivedData[offset + 3] & 0xFF);
+
+        return value;
+    }
+
 
     /**
      * Polls the CAN device for a single byte of data.
@@ -392,6 +409,7 @@ public class CoreDevice {
             System.out.printf("Device %d: Error occurred while reading CAN data for API ID %d.%n", deviceID, apiID);
         }
     }
+    
 
     public boolean getFaulted() {
         return isFaulted;

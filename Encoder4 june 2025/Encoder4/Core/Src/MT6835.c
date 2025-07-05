@@ -194,6 +194,19 @@ uint32_t get_counts_single_turn(void)
     return singleTurnSensorCounts;
 }
 
+// Getter methods for warning variables
+uint8_t get_rotation_overspeed_warning(void) {
+    return rotationOverspeedWarning;
+}
+
+uint8_t get_weak_magnetic_field_warning(void) {
+    return weakMagneticFieldWarning;
+}
+
+uint8_t get_under_voltage_warning(void) {
+    return underVoltageWarning;
+}
+
 int64_t get_counts_multi_turn(void)
 {
     return multiTurnSensorCounts;

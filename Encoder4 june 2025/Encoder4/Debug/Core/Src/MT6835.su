@@ -3,6 +3,9 @@
 ../Core/Src/MT6835.c:48:19:handle_spi_status	16	static
 ../Core/Src/MT6835.c:117:5:mt6835_update_counts	56	static
 ../Core/Src/MT6835.c:192:10:get_counts_single_turn	8	static
-../Core/Src/MT6835.c:197:9:get_counts_multi_turn	8	static
-../Core/Src/MT6835.c:202:9:get_counts_full	20	static
-../Core/Src/MT6835.c:208:6:reset_counts	8	static
+../Core/Src/MT6835.c:198:9:get_rotation_overspeed_warning	8	static
+../Core/Src/MT6835.c:202:9:get_weak_magnetic_field_warning	8	static
+../Core/Src/MT6835.c:206:9:get_under_voltage_warning	8	static
+../Core/Src/MT6835.c:210:9:get_counts_multi_turn	8	static
+../Core/Src/MT6835.c:215:9:get_counts_full	20	static
+../Core/Src/MT6835.c:221:6:reset_counts	8	static

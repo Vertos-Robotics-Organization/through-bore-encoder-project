@@ -74,22 +74,21 @@ int numHAL_Error = 0;
 
 int sensorMode = 0;
 const int CPR = 2097152; // 2 ^ 21
-const int BASE_ID = 0xA080000;
+const int BASE_ID = 0xA110000;
 int device_id_index = 0x40;
 
 const int POSITION_API_ID = 0;          // API ID for position data (8 bytes - 64-bit counts)
-const int VELOCITY_ACCEL_API_ID = 1;   // API ID for combined velocity/acceleration data (4 bytes)
+const int VELOCITY_ACCEL_API_ID = 1;   // API ID for combined velocity/acceleration data (8 bytes)
+const int BOOLEAN_STATUS_API_ID = 2;   // API ID for boolean status messages (1 byte)
 
 int device_id = 0;
 int pooptest = 1;
 int proxMode = 0;
 int towr = 0;
 
-
 uint32_t flashAddress = 0x0803F010;  // Example address in Flash memory
 uint64_t writeData;
 
-int errorStatus = ENCODER_STATUS_OK;
 
 // Global variable to track the last heartbeat time (in milliseconds)
 volatile uint32_t lastHeartbeatTime = 0;
@@ -102,16 +101,72 @@ const double VELOCITY_SCALE_FACTOR = 1000.0;     // Scale velocity to fit in 16-
 const double ACCELERATION_SCALE_FACTOR = 100.0;  // Scale acceleration to fit in 16-bit range
 
 const int TARGET_LOOP_TIME = 10; // ms
-//Advanced derivative calculation variables
+
+// Advanced derivative calculation variables
 double sensorVelocityRPS = 0.0;
 double sensorAccel = 0.0;
+
+//--------------------------------------------------------------------------------
+// Dynamic Linear Regression Configuration
+//--------------------------------------------------------------------------------
+// Maximum and minimum number of samples for linear regression
+#define MAX_LR_SAMPLES 8
+#define MIN_LR_SAMPLES 3
+
+// Dynamic sample count (can be changed at runtime)
+static int lr_samples = 4;  // Default to 4 samples
+
+// State variables for linear regression
+static int lrIndex = 0;
+static int lrCount = 0;
+
+// Pre-computed coefficients for different sample counts
+static const int64_t timeCoeffsTable[MAX_LR_SAMPLES + 1][MAX_LR_SAMPLES] = {
+    {0},                                    // [0] - unused
+    {0},                                    // [1] - unused
+    {0},                                    // [2] - unused
+    {-1, 0, 1, 0, 0, 0, 0, 0},             // [3] - 3 samples
+    {-3, -1, 1, 3, 0, 0, 0, 0},            // [4] - 4 samples
+    {-2, -1, 0, 1, 2, 0, 0, 0},            // [5] - 5 samples
+    {-5, -3, -1, 1, 3, 5, 0, 0},           // [6] - 6 samples
+    {-3, -2, -1, 0, 1, 2, 3, 0},           // [7] - 7 samples
+    {-7, -5, -3, -1, 1, 3, 5, 7}           // [8] - 8 samples
+};
+
+// Pre-computed sum of squared coefficients for different sample counts
+static const int64_t timeSquaredSumTable[MAX_LR_SAMPLES + 1] = {
+    0,   // [0] - unused
+    0,   // [1] - unused
+    0,   // [2] - unused
+    2,   // [3] - 3 samples: (-1)^2 + 0^2 + 1^2 = 2
+    20,  // [4] - 4 samples: (-3)^2 + (-1)^2 + 1^2 + 3^2 = 20
+    10,  // [5] - 5 samples: (-2)^2 + (-1)^2 + 0^2 + 1^2 + 2^2 = 10
+    70,  // [6] - 6 samples: (-5)^2 + (-3)^2 + (-1)^2 + 1^2 + 3^2 + 5^2 = 70
+    28,  // [7] - 7 samples: (-3)^2 + (-2)^2 + (-1)^2 + 0^2 + 1^2 + 2^2 + 3^2 = 28
+    168  // [8] - 8 samples: (-7)^2 + (-5)^2 + (-3)^2 + (-1)^2 + 1^2 + 3^2 + 5^2 + 7^2 = 168
+};
+
+// Expanded arrays to support up to 8 samples
+static int64_t positionLR[MAX_LR_SAMPLES];
+static uint32_t timeLR[MAX_LR_SAMPLES];
+
 // Optimized integer-based velocity/acceleration calculation variables
 int64_t lastMultiTurnCounts = 0;
 uint32_t lastSystemTimeMillisec = 0;
 int32_t lastVelocityCPS = 0;        // Last velocity in counts per second
 int32_t lastAccelCPS2 = 0;          // Last acceleration in counts per second squared
-int16_t velocityCountsScaled = 0;   // Final scaled velocity for CAN transmission
-int16_t accelCountsScaled = 0;      // Final scaled acceleration for CAN transmission
+int32_t velocityCountsScaled = 0;   // Final scaled velocity for CAN transmission
+int32_t accelCountsScaled = 0;      // Final scaled acceleration for CAN transmission
+
+// Boolean status variables (8 different boolean messages)
+int isHardwareFault = 0;         // Bit 0: hardware fault status (from errorStatus)
+int isLoopOverrun = 0;           // Bit 1: loop overrun status
+int isCANInvalid = 0;            // Bit 2: CAN communication status
+int isMagnetOutOfRange = 0;      // Bit 3: magnet out-of-range status
+int isMagnetWeakSignal = 0;    // Bit 4: magnet in-ideal-range status
+int isRotationOverspeed = 0;       // Bit 5: flash memory status
+int isCANClogged = 0;      // Bit 6: CAN bus clogged status (e.g., FIFO full)
+int isUnderVolted = 0;     // Bit 7: system ready status
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -127,6 +182,16 @@ static void MX_USB_DRD_FS_PCD_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_SPI2_Init(void);
 /* USER CODE BEGIN PFP */
+// Function prototypes for velocity calculation API
+int setVelocityCalculationSamples(int samples);
+int getVelocityCalculationSamples(void);
+int getMaxVelocityCalculationSamples(void);
+int getMinVelocityCalculationSamples(void);
+int getVelocityCalculationInfo(int samples, uint32_t* timeSpanMs, int* noiseReduction);
+
+// Helper function prototypes
+static inline const int64_t* get_timeCoeffs(void);
+static inline int64_t get_timeSquaredSum(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -136,13 +201,15 @@ uint32_t cdcRxLen = 0;
 
 FDCAN_TxHeaderTypeDef TxHeaderPosition;
 FDCAN_TxHeaderTypeDef TxHeaderVelocityAccel;
+FDCAN_TxHeaderTypeDef TxHeaderBooleanStatus;  // New header for boolean status
 
 FDCAN_RxHeaderTypeDef RxHeader;
 
 //uint32_t TxMailbox[4];
 
 uint8_t TxDataPosition[8] = { 0 };
-uint8_t TxDataVelocityAccel[4] = { 0 };  // Combined velocity and acceleration (4 bytes)
+uint8_t TxDataVelocityAccel[8] = { 0 };  // Combined velocity and acceleration (8 bytes)
+uint8_t TxDataBooleanStatus[1] = { 0 };  // Boolean status data (1 byte)
 uint8_t RxData[64] = { 0 };
 int indx = 0;
 uint8_t count = 0;
@@ -237,6 +304,7 @@ int main(void) {
 	/* USER CODE BEGIN 1 */
 	HAL_StatusTypeDef positionCanStatus = HAL_ERROR;
 	HAL_StatusTypeDef velocityAccelCanStatus = HAL_ERROR;
+	HAL_StatusTypeDef booleanStatusCanStatus = HAL_ERROR;  // New status for boolean messages
 
 	/* USER CODE END 1 */
 
@@ -271,6 +339,9 @@ int main(void) {
 	// Initialize the encoder system
   // if (FlexEncoder_Init(&hi2c1) != HAL_OK) {
   //     Error_Handler();  // Fail-safe if setup fails
+  //     booleanStatus2 = 0;  // Encoder initialization failed
+  // } else {
+  //     booleanStatus2 = 1;  // Encoder initialization successful
   // }
 
 	// Call the hue cycling function
@@ -311,6 +382,9 @@ int main(void) {
 
 	if (HAL_FDCAN_Start(&hfdcan1) != HAL_OK) {
 		Error_Handler();
+		isCANInvalid = 0;  // CAN initialization failed
+	} else {
+		isCANInvalid = 1;  // CAN initialization successful
 	}
 
 	if (HAL_FDCAN_ActivateNotification(&hfdcan1, FDCAN_IT_RX_FIFO0_NEW_MESSAGE, 0) != HAL_OK) {
@@ -319,14 +393,18 @@ int main(void) {
   
 	if ((uint32_t) readData == 0xffffffff) {
 		TxHeaderPosition.Identifier = BASE_ID;
+		isRotationOverspeed = 0;  // Flash memory not programmed
 	} else {
 		TxHeaderPosition.Identifier = (uint32_t) readData;
+		isRotationOverspeed = 1;  // Flash memory programmed
 	}
 
 	// Configure position message header (8 bytes)
 	txHeaderConfigure(&TxHeaderPosition);
-	// Configure velocity/acceleration message header (4 bytes)
-	txHeaderConfigureVelocityAccel(&TxHeaderVelocityAccel);
+	// Configure velocity/acceleration message header (8 bytes)
+	txHeaderConfigure(&TxHeaderVelocityAccel);
+	// Configure boolean status message header (1 byte)
+	txHeaderConfigureBooleanStatus(&TxHeaderBooleanStatus);
 
 	// ADC
 	HAL_ADC_Start(&hadc1);
@@ -350,6 +428,9 @@ int main(void) {
 		HAL_Delay(10); // Allow stabilization
 		HAL_GPIO_WritePin(CAN_ENABLE_GPIO_Port, CAN_ENABLE_Pin, GPIO_PIN_SET); // EN HIGH
 	}
+
+	// Initialize system ready status
+	isUnderVolted = 1;  // System ready after initialization
 	/* USER CODE END 2 */
 
 	/* Infinite loop */
@@ -380,6 +461,7 @@ int main(void) {
 							  writeData
 			);
 			HAL_FLASH_Lock();
+			isRotationOverspeed = 1;  // Flash write successful
 		}
 
 		// Read the angle and set LED hue
@@ -409,84 +491,159 @@ int main(void) {
 
 		int flexEncoderMode = 1;
 
-
 		//-----------------------------------------------------------------------------------------------------------
-		// Backwards difference velocity and acceleration calculations in counts (no floating point)
+		// Dynamic Linear Regression velocity and acceleration calculations
 		//-----------------------------------------------------------------------------------------------------------
-		uint32_t deltaTimeMs = currentTimeMillisec - lastSystemTimeMillisec;
+		// Store current sample
+		positionLR[lrIndex] = multiTurnCounts;
+		timeLR[lrIndex] = currentTimeMillisec;
+		lrIndex = (lrIndex + 1) % lr_samples;  // Use dynamic sample count
+		if (lrCount < lr_samples) lrCount++;   // Use dynamic sample count
 
-		if (deltaTimeMs == 0) {
-			// Skip calculations if no time has passed
-			deltaTimeMs = 1; // Minimum 1ms to prevent divide by zero
-		} else {
-			// Calculate velocity using backwards difference: v(n) = (x(n) - x(n-1)) / dt
-			int64_t deltaCounts = multiTurnCounts - lastMultiTurnCounts;
+		if (lrCount == lr_samples) {  // Use dynamic sample count
+			// Calculate velocity using optimized linear regression
+			int64_t numerator = 0;
 
-			// Calculate RAW velocity in counts per second using backwards difference
-			int32_t rawVelocityCPS = (int32_t)((deltaCounts * 1000) / deltaTimeMs);
+			// Single loop with pre-computed coefficients (now dynamic)
+			const int64_t* coeffs = get_timeCoeffs();
+			for (int i = 0; i < lr_samples; i++) {  // Use dynamic sample count
+				int idx = (lrIndex + i) % lr_samples;  // Use dynamic sample count
+				numerator += coeffs[i] * positionLR[idx];
+			}
 
-			// Calculate RAW acceleration using backwards difference: a(n) = (v(n) - v(n-1)) / dt
-			// This uses the current velocity and the previous filtered velocity
-			int32_t rawAccelCPS2 = ((rawVelocityCPS - lastVelocityCPS) * 1000) / (int32_t)deltaTimeMs;
+			// Get actual time span for the samples
+			int oldestIdx = lrIndex;  // Oldest sample after increment
+			int newestIdx = (lrIndex + lr_samples - 1) % lr_samples;  // Use dynamic sample count
+			uint32_t timeSpanMs = timeLR[newestIdx] - timeLR[oldestIdx];
 
-			// Apply low-pass filter to the RAW values (not the stored filtered values)
-			// Equivalent to alpha = 0.75 (3/4 old + 1/4 new)
-			int32_t filteredVelocityCPS = (lastVelocityCPS * 3 + rawVelocityCPS) >> 2;
-			int32_t filteredAccelCPS2 = (lastAccelCPS2 * 3 + rawAccelCPS2) >> 2;
+			if (timeSpanMs > 0) {
+				// Velocity calculation using dynamic coefficients
+				int64_t timeSquaredSum = get_timeSquaredSum();
+				int64_t rawVelocityCPS = (numerator * 1000) / ((int64_t)timeSpanMs * timeSquaredSum / 10);
 
-			// Scale down to 16-bit range and clamp
-			int16_t velocityScaled = (int16_t)((filteredVelocityCPS > 32767) ? 32767 :
-											 (filteredVelocityCPS < -32768) ? -32768 : filteredVelocityCPS);
-			int16_t accelScaled = (int16_t)((filteredAccelCPS2 > 32767) ? 32767 :
-										   (filteredAccelCPS2 < -32768) ? -32768 : filteredAccelCPS2);
+				// Simple acceleration calculation
+				uint32_t deltaTime = currentTimeMillisec - lastSystemTimeMillisec;
+				if (deltaTime > 0) {
+					int64_t rawAccelCPS2 = ((rawVelocityCPS - lastVelocityCPS) * 1000) / (int64_t)deltaTime;
 
-			// Update stored values for next iteration (backwards difference approach)
-			lastMultiTurnCounts = multiTurnCounts;        // Store current position for next backwards diff
-			lastSystemTimeMillisec = currentTimeMillisec; // Store current time for next backwards diff
-			lastVelocityCPS = filteredVelocityCPS;        // Store filtered velocity for next acceleration calc
-			lastAccelCPS2 = filteredAccelCPS2;           // Store filtered acceleration
+					// Adaptive filtering based on sample count
+					// More samples = can use lighter filtering since noise is already reduced
+					int filterShift = (lr_samples >= 6) ? 2 : 1;  // Lighter filtering for more samples
 
-			// Store final scaled values for CAN transmission
-			velocityCountsScaled = velocityScaled;
-			accelCountsScaled = accelScaled;
+					int64_t filteredVelocityCPS = (lastVelocityCPS + rawVelocityCPS) >> filterShift;
+					int64_t filteredAccelCPS2 = (lastAccelCPS2 * 3 + rawAccelCPS2) >> 2;  // Always heavy filtering for accel
+
+					velocityCountsScaled = (int32_t)(filteredVelocityCPS >> 11);
+					accelCountsScaled = (int32_t)(filteredAccelCPS2 >> 16);
+
+					lastVelocityCPS = filteredVelocityCPS;
+					lastAccelCPS2 = filteredAccelCPS2;
+				}
+			}
+
+			lastMultiTurnCounts = multiTurnCounts;
+			lastSystemTimeMillisec = currentTimeMillisec;
 		}
 
 
-		// Pack combined velocity and acceleration (4 bytes total: 2 bytes velocity + 2 bytes acceleration)
-		// Values are now in counts per second (velocity) and counts per second squared (acceleration)
-		// Big-endian format
-		TxDataVelocityAccel[0] = (uint8_t)(velocityCountsScaled >> 8);    // Velocity MSB
-		TxDataVelocityAccel[1] = (uint8_t)(velocityCountsScaled);         // Velocity LSB
-		TxDataVelocityAccel[2] = (uint8_t)(accelCountsScaled >> 8);       // Acceleration MSB
-		TxDataVelocityAccel[3] = (uint8_t)(accelCountsScaled);            // Acceleration LSB
+		// Status 5: Proximity sensor status (based on ADC reading)
+		if (proxMode) {
+			if (HAL_ADC_PollForConversion(&hadc1, 100) == HAL_OK) {
+				int adcValue = HAL_ADC_GetValue(&hadc1);
+			}
+		}
 
-		// Add message to CAN Tx FIFO queue // Base id all the stuff set by first // device id can id teams are familiar with //
+		// Pack all 8 boolean values into a single byte (bit-packed)
+    TxDataBooleanStatus[0] = 0;
+    TxDataBooleanStatus[0] |= (isHardwareFault & 0x01) << 0;       // Bit 0: hardware fault status
+    TxDataBooleanStatus[0] |= (isLoopOverrun & 0x01) << 1;         // Bit 1: loop overrun status
+    TxDataBooleanStatus[0] |= (isCANInvalid & 0x01) << 2;          // Bit 2: CAN communication status
+    TxDataBooleanStatus[0] |= (isMagnetOutOfRange & 0x01) << 3;    // Bit 3: magnet out-of-range status
+    TxDataBooleanStatus[0] |= (isMagnetWeakSignal & 0x01) << 4;    // Bit 4: magnet weak signal status
+    TxDataBooleanStatus[0] |= (isRotationOverspeed & 0x01) << 5;   // Bit 5: rotation overspeed status
+    TxDataBooleanStatus[0] |= (isCANClogged & 0x01) << 6;          // Bit 6: CAN bus clogged status
+    TxDataBooleanStatus[0] |= (isUnderVolted & 0x01) << 7;         // Bit 7: under-voltage status
+
+		// Pack combined velocity and acceleration as 8 bytes (4 bytes velocity + 4 bytes acceleration, both 32-bit signed)
+		// Big-endian format
+		TxDataVelocityAccel[0] = (uint8_t)(velocityCountsScaled >> 24);    // Use scaled values
+		TxDataVelocityAccel[1] = (uint8_t)(velocityCountsScaled >> 16);
+		TxDataVelocityAccel[2] = (uint8_t)(velocityCountsScaled >> 8);
+		TxDataVelocityAccel[3] = (uint8_t)(velocityCountsScaled);          // Velocity LSB
+		TxDataVelocityAccel[4] = (uint8_t)(accelCountsScaled >> 24);       // Use scaled values
+		TxDataVelocityAccel[5] = (uint8_t)(accelCountsScaled >> 16);
+		TxDataVelocityAccel[6] = (uint8_t)(accelCountsScaled >> 8);
+		TxDataVelocityAccel[7] = (uint8_t)(accelCountsScaled);             // Acceleration LSB
+
+		// Add message to CAN Tx FIFO queue
 		// Calculate base CAN ID for this device
 		uint32_t baseCanId = BASE_ID + device_id;
 
 		// Position message: embed API ID 0 in the CAN arbitration ID (8 bytes - raw counts)
 		TxHeaderPosition.Identifier = baseCanId | (POSITION_API_ID << 10);           // API 0: baseCanId | 0x000
-		// Combined velocity/acceleration message: embed API ID 16 in the CAN arbitration ID (4 bytes)
-		TxHeaderVelocityAccel.Identifier = baseCanId | (VELOCITY_ACCEL_API_ID << 10); // API 16: baseCanId | 0x4000
+		// Combined velocity/acceleration message: embed API ID 1 in the CAN arbitration ID (8 bytes)
+		TxHeaderVelocityAccel.Identifier = baseCanId | (VELOCITY_ACCEL_API_ID << 10); // API 1: baseCanId | 0x400
+		// Boolean status message: embed API ID 2 in the CAN arbitration ID (1 byte)
+		TxHeaderBooleanStatus.Identifier = baseCanId | (BOOLEAN_STATUS_API_ID << 10); // API 2: baseCanId | 0x800
 
 		// returns HAL_Error if fifo queue is full or CAN is not initialized correctly
 		// HAL_OK otherwise
 		positionCanStatus = HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &TxHeaderPosition, TxDataPosition);
 		velocityAccelCanStatus = HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &TxHeaderVelocityAccel, TxDataVelocityAccel);
+		booleanStatusCanStatus = HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &TxHeaderBooleanStatus, TxDataBooleanStatus);
 
 		//this is required for auto reboot when can bus disconnects
-		if (positionCanStatus != HAL_OK || velocityAccelCanStatus != HAL_OK) {
+		if (positionCanStatus != HAL_OK || velocityAccelCanStatus != HAL_OK || booleanStatusCanStatus != HAL_OK) {
 			if ((currentTimeMillisec - lastHeartbeatTime) > HEARTBEAT_TIMEOUT) {
-				errorStatus = ENCODER_STATUS_NO_CANBUS;
+        isCANInvalid = 1;  // CAN communication failed
 			} else {
-				errorStatus = ENCODER_STATUS_CAN_TX_FIFO_FULL;
+        isCANClogged = 1;  // CAN bus is clogged
 			}
-		}
+		} else {
+      isCANInvalid = 0;  // CAN communication successful
+      isCANClogged = 0;  // CAN bus is not clogged
+    }
 
-		if (handle_error_blink(errorStatus) == ENCODER_STATUS_OK) {
-			set_led_hue((float) singleTurnCounts / CPR, 1.0);
-		}
+    if(get_weak_magnetic_field_warning() == 1) {
+      isMagnetWeakSignal = 1;  // Magnet is not in ideal range
+    } else {
+      isMagnetWeakSignal = 0;  // Magnet is in ideal range
+    }
 
+    if(get_under_voltage_warning() == 1) {
+      isUnderVolted = 1;  // System is under-volted
+    } else {
+      isUnderVolted = 0;  // System is not under-volted
+    }
+
+    if(get_rotation_overspeed_warning() == 1) {
+      isRotationOverspeed = 1;  // Rotation is overspeed
+    } else {
+      isRotationOverspeed = 0;  // Rotation is not overspeed
+    }
+
+
+    // LED status logic for all boolean statuses
+    if (isHardwareFault == 1) {
+        handle_error_blink("SOS", 0.0f); // Red - Hardware fault (emergency) - SOS
+    } else if (isLoopOverrun == 1) {
+        handle_error_blink("M", 0.16f); // Yellow - Overrun - M (dash-dash)
+    } else if (isUnderVolted == 1) {
+        handle_error_blink("I", 0.16f); // Yellow - Under voltage - I (dot-dot)
+    } else if (isRotationOverspeed == 1) {
+        handle_error_blink("S", 0.16f); // Yellow - Rotation Overspeed - S (dot-dot-dot)
+    } else if (isCANInvalid == 1) {
+        handle_error_blink("H", 0.83f); // Purple - CAN Invalid - H (dot-dot-dot-dot)
+    } else if (isCANClogged == 1) {
+        handle_error_blink("5", 0.83f); // Purple - CAN Clogged - 5 (dot-dot-dot-dot-dot)
+    } else if (isMagnetOutOfRange == 1) {
+        handle_error_blink("O", 0.08f); // Orange - Magnet Out of Range - O (dash-dash-dash)
+    } else if (isMagnetWeakSignal == 1) {
+        handle_error_blink("0", 0.08f); // Orange - Magnet Weak Signal - 0 (dash-dash-dash-dash-dash)
+    } else {
+        // Normal operation: position-based hue
+        set_led_hue((float)singleTurnCounts / CPR, 1.0);
+    }
 
 
 		/* CAN Error reading */
@@ -512,7 +669,6 @@ int main(void) {
 		// 	pooptest = 1;
 		// }
 
-
 		/* LED modes*/
 		if (proxMode) {
 			// Poll for ADC conversion completion
@@ -535,8 +691,10 @@ int main(void) {
 		// currentTime is time at START of the loop
 		uint32_t loopTime = HAL_GetTick() - currentTimeMillisec;
 		if (loopTime > TARGET_LOOP_TIME) {
-			errorStatus = ENCODER_STATUS_LOOP_OVERRUN;
-		}
+      isLoopOverrun = 1;  // Set loop overrun status
+		} else {
+      isLoopOverrun = 0;  // Clear loop overrun status
+    }
 
 	}
     /* USER CODE END WHILE */
@@ -1070,24 +1228,126 @@ static void MX_GPIO_Init(void) {
 }
 
 /* USER CODE BEGIN 4 */
-void txHeaderConfigure(FDCAN_TxHeaderTypeDef* header) {  // Note the pointer!
+
+//-----------------------------------------------------------------------------------------------
+// Helper Functions
+//-----------------------------------------------------------------------------------------------
+
+/**
+ * @brief Gets pointer to time coefficients for current sample count
+ * @return Pointer to coefficients array for current lr_samples
+ */
+static inline const int64_t* get_timeCoeffs(void) {
+    return timeCoeffsTable[lr_samples];
+}
+
+/**
+ * @brief Gets time squared sum for current sample count
+ * @return Sum of squared coefficients for current lr_samples
+ */
+static inline int64_t get_timeSquaredSum(void) {
+    return timeSquaredSumTable[lr_samples];
+}
+
+//-----------------------------------------------------------------------------------------------
+// Public API Functions
+//-----------------------------------------------------------------------------------------------
+
+/**
+ * @brief Sets the number of samples used in linear regression velocity calculation
+ * @param samples Number of samples (MIN_LR_SAMPLES to MAX_LR_SAMPLES)
+ * @return 1 if successful, 0 if invalid sample count
+ */
+int setVelocityCalculationSamples(int samples) {
+    if (samples < MIN_LR_SAMPLES || samples > MAX_LR_SAMPLES) {
+        return 0;  // Invalid sample count
+    }
+
+    // Reset the linear regression state when changing sample count
+    lr_samples = samples;
+    lrCount = 0;  // Reset count to rebuild buffer with new size
+    lrIndex = 0;  // Reset index
+
+    // Clear the buffers
+    for (int i = 0; i < MAX_LR_SAMPLES; i++) {
+        positionLR[i] = 0;
+        timeLR[i] = 0;
+    }
+
+    return 1;  // Success
+}
+
+/**
+ * @brief Gets the current number of samples used in velocity calculation
+ * @return Current sample count
+ */
+int getVelocityCalculationSamples(void) {
+    return lr_samples;
+}
+
+/**
+ * @brief Gets the maximum supported sample count
+ * @return Maximum sample count
+ */
+int getMaxVelocityCalculationSamples(void) {
+    return MAX_LR_SAMPLES;
+}
+
+/**
+ * @brief Gets the minimum supported sample count
+ * @return Minimum sample count
+ */
+int getMinVelocityCalculationSamples(void) {
+    return MIN_LR_SAMPLES;
+}
+
+/**
+ * @brief Gets information about different sample count settings
+ * @param samples Sample count to query
+ * @param timeSpanMs Approximate time span covered (output parameter)
+ * @param noiseReduction Approximate noise reduction percentage (output parameter)
+ * @return 1 if valid sample count, 0 otherwise
+ */
+int getVelocityCalculationInfo(int samples, uint32_t* timeSpanMs, int* noiseReduction) {
+    if (samples < MIN_LR_SAMPLES || samples > MAX_LR_SAMPLES) {
+        return 0;
+    }
+
+    if (timeSpanMs) {
+        *timeSpanMs = (samples - 1) * TARGET_LOOP_TIME;  // Approximate time span
+    }
+
+    if (noiseReduction) {
+        // Approximate noise reduction based on sample count
+        // More samples = better noise reduction but more lag
+        const int noiseReductionTable[] = {0, 0, 0, 70, 80, 85, 88, 90, 92};
+        *noiseReduction = noiseReductionTable[samples];
+    }
+
+    return 1;
+}
+
+//-----------------------------------------------------------------------------------------------
+// Header Configuration Functions
+//-----------------------------------------------------------------------------------------------
+void txHeaderConfigure(FDCAN_TxHeaderTypeDef* header) {
     header->IdType = FDCAN_EXTENDED_ID;
     header->TxFrameType = FDCAN_DATA_FRAME;
     header->DataLength = FDCAN_DLC_BYTES_8;
     header->ErrorStateIndicator = FDCAN_ESI_ACTIVE;
     header->BitRateSwitch = FDCAN_BRS_OFF;
-    header->FDFormat = FDCAN_CLASSIC_CAN;    //dont use fd FDCAN_FD_CAN;
+    header->FDFormat = FDCAN_CLASSIC_CAN;
     header->TxEventFifoControl = FDCAN_NO_TX_EVENTS;
     header->MessageMarker = 0;
 }
 
-void txHeaderConfigureVelocityAccel(FDCAN_TxHeaderTypeDef* header) {  // Note the pointer!
+void txHeaderConfigureBooleanStatus(FDCAN_TxHeaderTypeDef* header) {
     header->IdType = FDCAN_EXTENDED_ID;
     header->TxFrameType = FDCAN_DATA_FRAME;
-    header->DataLength = FDCAN_DLC_BYTES_4;  // 4 bytes for combined velocity/acceleration
+    header->DataLength = FDCAN_DLC_BYTES_1;
     header->ErrorStateIndicator = FDCAN_ESI_ACTIVE;
     header->BitRateSwitch = FDCAN_BRS_OFF;
-    header->FDFormat = FDCAN_CLASSIC_CAN;    //dont use fd FDCAN_FD_CAN;
+    header->FDFormat = FDCAN_CLASSIC_CAN;
     header->TxEventFifoControl = FDCAN_NO_TX_EVENTS;
     header->MessageMarker = 0;
 }

@@ -33,7 +33,7 @@ extern "C" {
  *
  * @param errorStatus The current error status to handle
  */
-ErrorCode handle_error_blink(ErrorCode errorStatus);
+void handle_error_blink(const char *message, float hue2);
 
 #ifdef __cplusplus
 }
