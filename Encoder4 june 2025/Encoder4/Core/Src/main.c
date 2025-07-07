@@ -109,46 +109,15 @@ double sensorAccel = 0.0;
 //--------------------------------------------------------------------------------
 // Dynamic Linear Regression Configuration
 //--------------------------------------------------------------------------------
-// Maximum and minimum number of samples for linear regression
-#define MAX_LR_SAMPLES 8
-#define MIN_LR_SAMPLES 3
+// Store current sample
+// Simple backward difference velocity calculation with low-pass filtering
+static const float velocity_alpha = 0.2f; // Low-pass filter coefficient (0.0 - 1.0)
+static const float accel_alpha = 0.1f;    // Lower for acceleration
 
-// Dynamic sample count (can be changed at runtime)
-static int lr_samples = 4;  // Default to 4 samples
-
-// State variables for linear regression
-static int lrIndex = 0;
-static int lrCount = 0;
-
-// Pre-computed coefficients for different sample counts
-static const int64_t timeCoeffsTable[MAX_LR_SAMPLES + 1][MAX_LR_SAMPLES] = {
-    {0},                                    // [0] - unused
-    {0},                                    // [1] - unused
-    {0},                                    // [2] - unused
-    {-1, 0, 1, 0, 0, 0, 0, 0},             // [3] - 3 samples
-    {-3, -1, 1, 3, 0, 0, 0, 0},            // [4] - 4 samples
-    {-2, -1, 0, 1, 2, 0, 0, 0},            // [5] - 5 samples
-    {-5, -3, -1, 1, 3, 5, 0, 0},           // [6] - 6 samples
-    {-3, -2, -1, 0, 1, 2, 3, 0},           // [7] - 7 samples
-    {-7, -5, -3, -1, 1, 3, 5, 7}           // [8] - 8 samples
-};
-
-// Pre-computed sum of squared coefficients for different sample counts
-static const int64_t timeSquaredSumTable[MAX_LR_SAMPLES + 1] = {
-    0,   // [0] - unused
-    0,   // [1] - unused
-    0,   // [2] - unused
-    2,   // [3] - 3 samples: (-1)^2 + 0^2 + 1^2 = 2
-    20,  // [4] - 4 samples: (-3)^2 + (-1)^2 + 1^2 + 3^2 = 20
-    10,  // [5] - 5 samples: (-2)^2 + (-1)^2 + 0^2 + 1^2 + 2^2 = 10
-    70,  // [6] - 6 samples: (-5)^2 + (-3)^2 + (-1)^2 + 1^2 + 3^2 + 5^2 = 70
-    28,  // [7] - 7 samples: (-3)^2 + (-2)^2 + (-1)^2 + 0^2 + 1^2 + 2^2 + 3^2 = 28
-    168  // [8] - 8 samples: (-7)^2 + (-5)^2 + (-3)^2 + (-1)^2 + 1^2 + 3^2 + 5^2 + 7^2 = 168
-};
-
-// Expanded arrays to support up to 8 samples
-static int64_t positionLR[MAX_LR_SAMPLES];
-static uint32_t timeLR[MAX_LR_SAMPLES];
+static int64_t prevMultiTurnCounts = 0;
+static uint32_t prevTimeMillisec = 0;
+static float filteredVelocityCPS = 0.0f;
+static float filteredAccelCPS2 = 0.0f;
 
 // Optimized integer-based velocity/acceleration calculation variables
 int64_t lastMultiTurnCounts = 0;
@@ -494,56 +463,31 @@ int main(void) {
 		//-----------------------------------------------------------------------------------------------------------
 		// Dynamic Linear Regression velocity and acceleration calculations
 		//-----------------------------------------------------------------------------------------------------------
-		// Store current sample
-		positionLR[lrIndex] = multiTurnCounts;
-		timeLR[lrIndex] = currentTimeMillisec;
-		lrIndex = (lrIndex + 1) % lr_samples;  // Use dynamic sample count
-		if (lrCount < lr_samples) lrCount++;   // Use dynamic sample count
 
-		if (lrCount == lr_samples) {  // Use dynamic sample count
-			// Calculate velocity using optimized linear regression
-			int64_t numerator = 0;
+    if (prevTimeMillisec != 0) {
+        int64_t deltaCounts = multiTurnCounts - prevMultiTurnCounts;
+        uint32_t deltaTime = currentTimeMillisec - prevTimeMillisec;
 
-			// Single loop with pre-computed coefficients (now dynamic)
-			const int64_t* coeffs = get_timeCoeffs();
-			for (int i = 0; i < lr_samples; i++) {  // Use dynamic sample count
-				int idx = (lrIndex + i) % lr_samples;  // Use dynamic sample count
-				numerator += coeffs[i] * positionLR[idx];
-			}
+        if (deltaTime > 0) {
+      float velocityCPS = (float)deltaCounts * 1000.0f / (float)deltaTime;
 
-			// Get actual time span for the samples
-			int oldestIdx = lrIndex;  // Oldest sample after increment
-			int newestIdx = (lrIndex + lr_samples - 1) % lr_samples;  // Use dynamic sample count
-			uint32_t timeSpanMs = timeLR[newestIdx] - timeLR[oldestIdx];
+      // Low-pass filter for velocity
+      filteredVelocityCPS = velocity_alpha * velocityCPS + (1.0f - velocity_alpha) * filteredVelocityCPS;
 
-			if (timeSpanMs > 0) {
-				// Velocity calculation using dynamic coefficients
-				int64_t timeSquaredSum = get_timeSquaredSum();
-				int64_t rawVelocityCPS = (numerator * 1000) / ((int64_t)timeSpanMs * timeSquaredSum / 10);
+      // Acceleration (backward difference of velocity)
+      float accelCPS2 = (filteredVelocityCPS - lastVelocityCPS) * 1000.0f / (float)deltaTime;
+      filteredAccelCPS2 = accel_alpha * accelCPS2 + (1.0f - accel_alpha) * filteredAccelCPS2;
 
-				// Simple acceleration calculation
-				uint32_t deltaTime = currentTimeMillisec - lastSystemTimeMillisec;
-				if (deltaTime > 0) {
-					int64_t rawAccelCPS2 = ((rawVelocityCPS - lastVelocityCPS) * 1000) / (int64_t)deltaTime;
+      velocityCountsScaled = (int32_t)(filteredVelocityCPS);
+      accelCountsScaled = (int32_t)(filteredAccelCPS2);
 
-					// Adaptive filtering based on sample count
-					// More samples = can use lighter filtering since noise is already reduced
-					int filterShift = (lr_samples >= 6) ? 2 : 1;  // Lighter filtering for more samples
+      lastVelocityCPS = filteredVelocityCPS;
+      lastAccelCPS2 = filteredAccelCPS2;
+        }
+    }
 
-					int64_t filteredVelocityCPS = (lastVelocityCPS + rawVelocityCPS) >> filterShift;
-					int64_t filteredAccelCPS2 = (lastAccelCPS2 * 3 + rawAccelCPS2) >> 2;  // Always heavy filtering for accel
-
-					velocityCountsScaled = (int32_t)(filteredVelocityCPS >> 11);
-					accelCountsScaled = (int32_t)(filteredAccelCPS2 >> 16);
-
-					lastVelocityCPS = filteredVelocityCPS;
-					lastAccelCPS2 = filteredAccelCPS2;
-				}
-			}
-
-			lastMultiTurnCounts = multiTurnCounts;
-			lastSystemTimeMillisec = currentTimeMillisec;
-		}
+    prevMultiTurnCounts = multiTurnCounts;
+    prevTimeMillisec = currentTimeMillisec;
 
 
 		// Status 5: Proximity sensor status (based on ADC reading)
@@ -1233,99 +1177,13 @@ static void MX_GPIO_Init(void) {
 // Helper Functions
 //-----------------------------------------------------------------------------------------------
 
-/**
- * @brief Gets pointer to time coefficients for current sample count
- * @return Pointer to coefficients array for current lr_samples
- */
-static inline const int64_t* get_timeCoeffs(void) {
-    return timeCoeffsTable[lr_samples];
-}
 
-/**
- * @brief Gets time squared sum for current sample count
- * @return Sum of squared coefficients for current lr_samples
- */
-static inline int64_t get_timeSquaredSum(void) {
-    return timeSquaredSumTable[lr_samples];
-}
 
 //-----------------------------------------------------------------------------------------------
 // Public API Functions
 //-----------------------------------------------------------------------------------------------
 
-/**
- * @brief Sets the number of samples used in linear regression velocity calculation
- * @param samples Number of samples (MIN_LR_SAMPLES to MAX_LR_SAMPLES)
- * @return 1 if successful, 0 if invalid sample count
- */
-int setVelocityCalculationSamples(int samples) {
-    if (samples < MIN_LR_SAMPLES || samples > MAX_LR_SAMPLES) {
-        return 0;  // Invalid sample count
-    }
 
-    // Reset the linear regression state when changing sample count
-    lr_samples = samples;
-    lrCount = 0;  // Reset count to rebuild buffer with new size
-    lrIndex = 0;  // Reset index
-
-    // Clear the buffers
-    for (int i = 0; i < MAX_LR_SAMPLES; i++) {
-        positionLR[i] = 0;
-        timeLR[i] = 0;
-    }
-
-    return 1;  // Success
-}
-
-/**
- * @brief Gets the current number of samples used in velocity calculation
- * @return Current sample count
- */
-int getVelocityCalculationSamples(void) {
-    return lr_samples;
-}
-
-/**
- * @brief Gets the maximum supported sample count
- * @return Maximum sample count
- */
-int getMaxVelocityCalculationSamples(void) {
-    return MAX_LR_SAMPLES;
-}
-
-/**
- * @brief Gets the minimum supported sample count
- * @return Minimum sample count
- */
-int getMinVelocityCalculationSamples(void) {
-    return MIN_LR_SAMPLES;
-}
-
-/**
- * @brief Gets information about different sample count settings
- * @param samples Sample count to query
- * @param timeSpanMs Approximate time span covered (output parameter)
- * @param noiseReduction Approximate noise reduction percentage (output parameter)
- * @return 1 if valid sample count, 0 otherwise
- */
-int getVelocityCalculationInfo(int samples, uint32_t* timeSpanMs, int* noiseReduction) {
-    if (samples < MIN_LR_SAMPLES || samples > MAX_LR_SAMPLES) {
-        return 0;
-    }
-
-    if (timeSpanMs) {
-        *timeSpanMs = (samples - 1) * TARGET_LOOP_TIME;  // Approximate time span
-    }
-
-    if (noiseReduction) {
-        // Approximate noise reduction based on sample count
-        // More samples = better noise reduction but more lag
-        const int noiseReductionTable[] = {0, 0, 0, 70, 80, 85, 88, 90, 92};
-        *noiseReduction = noiseReductionTable[samples];
-    }
-
-    return 1;
-}
 
 //-----------------------------------------------------------------------------------------------
 // Header Configuration Functions
