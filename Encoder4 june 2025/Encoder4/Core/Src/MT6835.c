@@ -8,6 +8,9 @@ uint8_t  rotationOverspeedWarning = 0;
 uint8_t  weakMagneticFieldWarning = 0;
 uint8_t  underVoltageWarning      = 0;
 
+// Add at the top (or in a header if shared)
+static uint8_t encoderDirection = 1; // 1 = normal, -1 = inverted
+
 //extern int numTimeout; // Reference to the variable defined in main.c
 //extern int numHAL_Error = 0;
 
@@ -180,7 +183,7 @@ int mt6835_update_counts(SPI_HandleTypeDef *hspi)
 
     // 2) Accumulate the delta into 'multiTurnSensorCounts'
     //    so that multiTurnSensorCounts now holds the absolute total.
-    multiTurnSensorCounts += delta;
+    multiTurnSensorCounts += delta * encoderDirection;
 
     previousSingleTurn = raw_counts;
     singleTurnSensorCounts = raw_counts;
@@ -223,6 +226,25 @@ void reset_counts(void)
     // Reset both single-turn and multi-turn counts
     singleTurnSensorCounts = 0;
     multiTurnSensorCounts = 0;
+}
+
+void set_counts(int64_t counts)
+{
+    // Set the multi-turn counts and reset single-turn counts
+    multiTurnSensorCounts = counts; // Extract multi-turn part
+    singleTurnSensorCounts = counts; // Extract single-turn part
+}
+
+void set_encoder_direction(int dir) {
+    encoderDirection = (dir >= 0) ? 1 : -1;
+}
+
+void invert_encoder_direction_if(int isInverted) {
+    if (isInverted) {
+        encoderDirection = -1;
+    } else {
+        encoderDirection = 1; // Reset to normal direction
+    }
 }
 
 

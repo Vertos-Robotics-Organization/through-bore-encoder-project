@@ -40,8 +40,6 @@ public class ParentCANSense extends CoreDevice{
     private boolean isCommandInProgress = false;
     private long lastCommandTime = 0;
     private static final long COMMAND_TIMEOUT_MS = 5000; // 5 second timeout for commands
-    private static final int VELOCITY_SCALE_FACTOR = 10;      // Must match C code
-    private static final int ACCELERATION_SCALE_FACTOR = 100; 
 
     /**
      * Constructor for CANSense.
@@ -131,7 +129,6 @@ public class ParentCANSense extends CoreDevice{
     //----------------------------------------------------------------------------------------
     // Getters for native encoder data (UPDATED)
     //----------------------------------------------------------------------------------------
-    
     /**
      * Returns the raw multi-turn encoder counts.
      *
