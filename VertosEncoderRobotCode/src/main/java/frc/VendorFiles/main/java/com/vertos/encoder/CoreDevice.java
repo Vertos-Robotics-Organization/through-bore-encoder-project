@@ -2,6 +2,7 @@ package frc.VendorFiles.main.java.com.vertos.encoder;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -12,11 +13,14 @@ import edu.wpi.first.wpilibj.CAN;
 public class CoreDevice {
     
     // Objects for handling CAN communication and data
-    private ScheduledExecutorService scheduler;
+    private static final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
+
     private CAN canDevice;
     private CANData canData;
+    private final List<Pair<CoreDeviceListener, Integer>> listenerPairs = new ArrayList<>();
 
     private boolean isFaulted = false;
+
 
     // Variables and Constants
     private final int deviceID;
@@ -24,12 +28,6 @@ public class CoreDevice {
 
     private static final int QUERY_API_ID = 1;   // API ID for querying devices
     
-    // Command API IDs - these should match the encoder firmware
-    protected static final int ZERO_ENCODER_API_ID = 10;        // API ID for zero encoder command
-    protected static final int INVERT_DIRECTION_API_ID = 11;    // API ID for invert direction command
-    protected static final int SET_POSITION_API_ID = 12;        // API ID for set position command
-    protected static final int RESET_FACTORY_API_ID = 13;      // API ID for factory reset command
-    protected static final int CLEAR_FAULTS_API_ID = 14;       // API ID for clear faults command
 
     public CoreDevice(int deviceID, boolean debugMode) {
         this.deviceID = deviceID;
@@ -38,7 +36,35 @@ public class CoreDevice {
         // Initialize CAN device with the correct base ID
         this.canDevice = new CAN(deviceID, 17, 10);
         this.canData = new CANData();
-        this.scheduler = Executors.newScheduledThreadPool(1);
+        startListening();
+    }
+
+    /**
+     * Registers a listener for device events.
+     */
+    public void addListener(CoreDeviceListener listener, int apiID) {
+        listenerPairs.add(new Pair<>(listener, apiID));
+    }
+
+    /**
+     * Removes a listener for device events.
+     */
+    public void removeListener(CoreDeviceListener listener, int apiID) {
+        listenerPairs.removeIf(pair -> Objects.equals(pair.getListener(), listener) && Objects.equals(pair.getAPIID(), apiID));
+    }
+
+    private void startListening() {
+        Executors.newSingleThreadExecutor().submit(() -> {
+            while (true) {
+                devicePeriodic();
+                try {
+                    Thread.sleep(10); // Small delay to prevent busy-waiting
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        });
     }
 
    /**
@@ -58,7 +84,20 @@ public class CoreDevice {
         scheduler.shutdown(); // Stop the loop
     }
 
-    public void devicePeriodic() {}
+    /**
+     * Periodic method to read data from the CAN device.
+     * This method checks for new CAN packets and notifies listeners.
+     */
+    public void devicePeriodic() {
+
+        for (Pair<CoreDeviceListener, Integer> listenerPair : listenerPairs) {
+            if (canDevice.readPacketLatest(listenerPair.getAPIID(), canData)) {
+                byte[] receivedData = canData.data;
+                    listenerPair.getListener().onDataReceived(receivedData);
+            }
+        }
+
+    }
 
     /**
      * Generic method to attempt a CAN operation and automatically handle fault state.
@@ -101,7 +140,7 @@ public class CoreDevice {
         T execute();
     }
 
-    public long pollCanDeviceLong(int apiID) {
+    protected long pollCanDeviceLong(int apiID) {
         return attemptCanOperation(() -> {
             if (canDevice.readPacketLatest(apiID, canData)) {
                 byte[] receivedData = canData.data;
@@ -116,7 +155,7 @@ public class CoreDevice {
         }, apiID, -999L);
     }
 
-    public int pollCanDevice32BitSigned(int apiID, int offset) {
+    protected int pollCanDevice32BitSigned(int apiID, int offset) {
         return attemptCanOperation(() -> {
             if (canDevice.readPacketLatest(apiID, canData)) {
                 byte[] receivedData = canData.data;
@@ -139,7 +178,7 @@ public class CoreDevice {
      * @param offset The offset in the byte array where the 32-bit value starts.
      * @return The 32-bit signed integer value.
      */
-    private int readCanPacketAs32BitSigned(byte[] receivedData, int offset) {
+    protected int readCanPacketAs32BitSigned(byte[] receivedData, int offset) {
         // Combine four bytes into a 32-bit signed integer (big-endian)
         int value = ((receivedData[offset] & 0xFF) << 24)
                     | ((receivedData[offset + 1] & 0xFF) << 16)
@@ -156,7 +195,7 @@ public class CoreDevice {
      * @param apiID The API ID for the data to read.
      * @return The byte value read from the CAN device, or -1 if no data received.
      */
-    public byte pollCanDeviceByte(int apiID) {
+    protected byte pollCanDeviceByte(int apiID) {
         return attemptCanOperation(() -> {
             if (canDevice.readPacketLatest(apiID, canData)) {
                 byte[] receivedData = canData.data;
@@ -487,7 +526,7 @@ public class CoreDevice {
      * @param receivedData The byte array containing the received CAN packet data.
      * @return The 64-bit signed long value representing the received data.
      */
-    private long readCanPacketAsLong(byte[] receivedData) {
+    protected long readCanPacketAsLong(byte[] receivedData) {
         return ((long)(receivedData[0] & 0xFF) << 56)
              | ((long)(receivedData[1] & 0xFF) << 48)
              | ((long)(receivedData[2] & 0xFF) << 40)
@@ -516,5 +555,26 @@ public class CoreDevice {
         }
         
         return value;
+    }
+
+
+    
+    // Helper class to represent a pair of CoreDeviceListener and Integer
+    private static class Pair<T, U> {
+        private final T first;
+        private final U second;
+
+        public Pair(T first, U second) {
+            this.first = first;
+            this.second = second;
+        }
+
+        public T getListener() {
+            return first;
+        }
+
+        public U getAPIID() {
+            return second;
+        }
     }
 }

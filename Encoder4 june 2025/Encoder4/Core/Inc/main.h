@@ -76,7 +76,6 @@ void Error_Handler(void);
 #define CAN_NERROR_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
-#define ROBORIO_CAN_ID 0x01011840
 /* USER CODE END Private defines */
 
 #ifdef __cplusplus

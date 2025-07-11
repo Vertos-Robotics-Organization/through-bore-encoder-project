@@ -95,6 +95,8 @@ volatile uint32_t lastHeartbeatTime = 0;
 
 // Define the timeout period (e.g., 1000 ms = 1 second)
 #define HEARTBEAT_TIMEOUT 1000
+#define ROBORIO_CAN_ID 0x01011840
+
 
 // At the top of main.c, define a backup register or flash address for the sticky flag
 #define RESET_STICKY_FLAG_ADDR 0x0803F020 // Example flash address
@@ -164,9 +166,29 @@ int getMaxVelocityCalculationSamples(void);
 int getMinVelocityCalculationSamples(void);
 int getVelocityCalculationInfo(int samples, uint32_t* timeSpanMs, int* noiseReduction);
 
-// Helper function prototypes
-static inline const int64_t* get_timeCoeffs(void);
-static inline int64_t get_timeSquaredSum(void);
+// static inline const int64_t* get_timeCoeffs(void);
+// static inline int64_t get_timeSquaredSum(void);
+
+// ADD THESE MISSING PROTOTYPES:
+void reset_counts(void);
+void invert_encoder_direction(int direction);
+void set_counts(int64_t newPosition);
+void set_encoder_direction(int direction);
+void reset_all_faults(void);
+void txHeaderConfigure(FDCAN_TxHeaderTypeDef* header);
+void txHeaderConfigureBooleanStatus(FDCAN_TxHeaderTypeDef* header);
+int was_reset_during_enable(void);
+void clear_reset_sticky_flag(void);
+void set_reset_sticky_flag(void);
+int get_weak_magnetic_field_warning(void);
+int get_under_voltage_warning(void);
+int get_rotation_overspeed_warning(void);
+int64_t get_counts_multi_turn(void);
+uint32_t get_counts_single_turn(void);
+void set_led_hue(float hue, float brightness);
+void set_led_rgb(uint8_t r, uint8_t g, uint8_t b);
+void handle_error_blink(const char* pattern, float hue);
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -188,6 +210,11 @@ uint8_t TxDataBooleanStatus[1] = { 0 };  // Boolean status data (1 byte)
 uint8_t RxData[64] = { 0 };
 int indx = 0;
 uint8_t count = 0;
+
+uint32_t get_tx_identifier(uint32_t baseCanId, uint32_t apiId) {
+    return (baseCanId + device_id) | (apiId << 10);  // Add device_id like Java does
+}
+
 
 /***************************************************************************************************
  *
@@ -212,27 +239,27 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
             return;
         }
 
-        // 4. Handle specific command messages based on RxData[0]
-        if (RxData[0] == 41) {
+        // 4. Handle specific command messages based on RxHeader.Identifier
+        if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 41)) {
             device_id = RxData[2];
             TxHeaderPosition.Identifier = BASE_ID + device_id;
             writeData = TxHeaderPosition.Identifier;
             towr = 1;
-        } else if (RxData[0] == 42) {
+        } else if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 42)) {
             pooptest = 1;
-        } else if (RxData[0] == 43) {
+        } else if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 43)) {
             HAL_FLASH_Unlock();
             FLASH_PageErase(FLASH_BANK_1, 0x7E);
             HAL_FLASH_Lock();
-        } else if (RxHeader == 10) {  // ZERO_ENCODER_API_ID
+        } else if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 10)) {  // ZERO_ENCODER_API_ID
             // Zero the encoder
             reset_counts();
-        } else if (RxData[0] == 11) {  // INVERT_DIRECTION_API_ID
+        } else if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 11)) {  // INVERT_DIRECTION_API_ID
             // Invert direction logic clockwise
             invert_encoder_direction(1);
-        } else if (RxData[0] == 12) {
+        } else if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 12)) {
             invert_encoder_direction(-1);  // INVERT_DIRECTION_API_ID
-        } else if (RxData[0] == 13) {  // SET_POSITION_API_ID
+        } else if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 13)) {  // SET_POSITION_API_ID
             // Set position logic
             if (RxHeader.DataLength == 8) {
                 int64_t newPosition = ((int64_t) RxData[0] << 56) |
@@ -245,23 +272,17 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
                                       ((int64_t) RxData[7]);
                 set_counts(newPosition);
             }
-        } else if (RxData[0] == 13) {  // RESET_FACTORY_API_ID
+        } else if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 14)) {  // RESET_FACTORY_API_ID
             // Factory reset logic
-        } else if (RxData[0] == 14) {  // CLEAR_FAULTS_API_ID
-            // Clear fault flags
-            isHardwareFault = 0;
-            isLoopOverrun = 0;
-            isCANInvalid = 0;
-            isResetDuringEnable = 0;
-            isMagnetWeakSignal = 0;
-            isRotationOverspeed = 0;
-            isCANClogged = 0;
-            isUnderVolted = 0;
+            set_encoder_direction(1);
+            // TODO errase flash memory
+            HAL_FLASH_Unlock();
+            FLASH_PageErase(FLASH_BANK_1, 0x7E);
+            HAL_FLASH_Lock();
         }
 
-
         // 5. Respond to a "query all devices" command
-        else if (RxData[0] == 44) {
+        else if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 44)) {
             uint32_t uid[3];
             uid[0] = HAL_GetUIDw0();
             uid[1] = HAL_GetUIDw1();
@@ -497,20 +518,20 @@ int main(void) {
         uint32_t deltaTime = currentTimeMillisec - prevTimeMillisec;
 
         if (deltaTime > 0) {
-      float velocityCPS = (float)deltaCounts * 1000.0f / (float)deltaTime;
+			  float velocityCPS = (float)deltaCounts * 1000.0f / (float)deltaTime;
 
-      // Low-pass filter for velocity
-      filteredVelocityCPS = velocity_alpha * velocityCPS + (1.0f - velocity_alpha) * filteredVelocityCPS;
+			  // Low-pass filter for velocity
+			  filteredVelocityCPS = velocity_alpha * velocityCPS + (1.0f - velocity_alpha) * filteredVelocityCPS;
 
-      // Acceleration (backward difference of velocity)
-      float accelCPS2 = (filteredVelocityCPS - lastVelocityCPS) * 1000.0f / (float)deltaTime;
-      filteredAccelCPS2 = accel_alpha * accelCPS2 + (1.0f - accel_alpha) * filteredAccelCPS2;
+			  // Acceleration (backward difference of velocity)
+			  float accelCPS2 = (filteredVelocityCPS - lastVelocityCPS) * 1000.0f / (float)deltaTime;
+			  filteredAccelCPS2 = accel_alpha * accelCPS2 + (1.0f - accel_alpha) * filteredAccelCPS2;
 
-      velocityCountsScaled = (int32_t)(filteredVelocityCPS);
-      accelCountsScaled = (int32_t)(filteredAccelCPS2);
+			  velocityCountsScaled = (int32_t)filteredVelocityCPS;
+			  accelCountsScaled = (int32_t)filteredAccelCPS2;
 
-      lastVelocityCPS = filteredVelocityCPS;
-      lastAccelCPS2 = filteredAccelCPS2;
+			  lastVelocityCPS = filteredVelocityCPS;
+			  lastAccelCPS2 = filteredAccelCPS2;
         }
     }
 
@@ -527,14 +548,14 @@ int main(void) {
 
 		// Pack all 8 boolean values into a single byte (bit-packed)
     TxDataBooleanStatus[0] = 0;
-    TxDataBooleanStatus[0] |= (isHardwareFault & 0x01) << 0;       // Bit 0: hardware fault status
-    TxDataBooleanStatus[0] |= (isLoopOverrun & 0x01) << 1;         // Bit 1: loop overrun status
-    TxDataBooleanStatus[0] |= (isCANInvalid & 0x01) << 2;          // Bit 2: CAN communication status
-    TxDataBooleanStatus[0] |= (isResetDuringEnable & 0x01) << 3;    // Bit 3: magnet out-of-range status
-    TxDataBooleanStatus[0] |= (isMagnetWeakSignal & 0x01) << 4;    // Bit 4: magnet weak signal status
-    TxDataBooleanStatus[0] |= (isRotationOverspeed & 0x01) << 5;   // Bit 5: rotation overspeed status
-    TxDataBooleanStatus[0] |= (isCANClogged & 0x01) << 6;          // Bit 6: CAN bus clogged status
-    TxDataBooleanStatus[0] |= (isUnderVolted & 0x01) << 7;         // Bit 7: under-voltage status
+    TxDataBooleanStatus[0] = (isHardwareFault & 0x01) << 0;       // Bit 0: hardware fault status
+    TxDataBooleanStatus[0] = (isLoopOverrun & 0x01) << 1;         // Bit 1: loop overrun status
+    TxDataBooleanStatus[0] = (isCANInvalid & 0x01) << 2;          // Bit 2: CAN communication status
+    TxDataBooleanStatus[0] = (isResetDuringEnable & 0x01) << 3;    // Bit 3: magnet out-of-range status
+    TxDataBooleanStatus[0] = (isMagnetWeakSignal & 0x01) << 4;    // Bit 4: magnet weak signal status
+    TxDataBooleanStatus[0] = (isRotationOverspeed & 0x01) << 5;   // Bit 5: rotation overspeed status
+    TxDataBooleanStatus[0] = (isCANClogged & 0x01) << 6;          // Bit 6: CAN bus clogged status
+    TxDataBooleanStatus[0] = (isUnderVolted & 0x01) << 7;         // Bit 7: under-voltage status
 
 		// Pack combined velocity and acceleration as 8 bytes (4 bytes velocity + 4 bytes acceleration, both 32-bit signed)
 		// Big-endian format
@@ -606,7 +627,6 @@ int main(void) {
         isHardwareFault = 0;
     }
 
-
     // LED status logic for all boolean statuses
     if (isHardwareFault == 1) {
         handle_error_blink("SOS", 0.0f); // Red - Hardware fault (emergency) - SOS
@@ -621,9 +641,9 @@ int main(void) {
     } else if (isCANClogged == 1) {
         handle_error_blink("5", 0.83f); // Purple - CAN Clogged - 5 (dot-dot-dot-dot-dot)
     } else if (isResetDuringEnable == 1) {
-        handle_error_blink("O", 0.08f); // Orange - Magnet Out of Range - O (dash-dash-dash)
+        handle_error_blink("O", 0.01f); // Orange - Reset during enable - O (dash-dash-dash)
     } else if (isMagnetWeakSignal == 1) {
-        handle_error_blink("0", 0.08f); // Orange - Magnet Weak Signal - 0 (dash-dash-dash-dash-dash)
+        handle_error_blink("0", 0.01f); // Orange - Magnet Weak Signal - 0 (dash-dash-dash-dash-dash)
     } else {
         // Normal operation: position-based hue
         set_led_hue((float)singleTurnCounts / CPR, 1.0);
@@ -1216,10 +1236,6 @@ static void MX_GPIO_Init(void) {
 // Helper Functions
 //-----------------------------------------------------------------------------------------------
 
-uint32_t get_tx_identifier(uint32_t baseCanId, uint32_t apiId) {
-    return (baseCanId + device_id) | (apiId << 10);  // Add device_id like Java does
-}
-
 // Function to set the sticky flag
 void set_reset_sticky_flag(void) {
     HAL_FLASH_Unlock();
@@ -1239,6 +1255,7 @@ int was_reset_during_enable(void) {
     uint64_t flag = *((uint64_t*)RESET_STICKY_FLAG_ADDR);
     return (flag == 0xDEADBEEF);
 }
+
 
 //-----------------------------------------------------------------------------------------------
 // Public API Functions

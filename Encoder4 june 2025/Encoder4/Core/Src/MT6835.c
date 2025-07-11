@@ -239,7 +239,7 @@ void set_encoder_direction(int dir) {
     encoderDirection = (dir >= 0) ? 1 : -1;
 }
 
-void invert_encoder_direction_if(int isInverted) {
+void invert_encoder_direction(int isInverted) {
     if (isInverted) {
         encoderDirection = -1;
     } else {

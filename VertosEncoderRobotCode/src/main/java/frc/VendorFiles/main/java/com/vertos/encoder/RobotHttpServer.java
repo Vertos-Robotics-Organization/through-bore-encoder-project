@@ -20,6 +20,9 @@ public class RobotHttpServer {
     private HttpServer server;
     private int port;
 
+    private CANSense confDevice;
+
+
     // Keep track of the last received integers (optional)
     private volatile int lastVal1 = 0;
     private volatile int lastVal2 = 0;
@@ -117,8 +120,7 @@ public class RobotHttpServer {
 
             System.out.println("Received val1=" + val1 + ", val2=" + val2);
 
-            MT6835 confDevice;
-            confDevice = new MT6835(0, false); // Debug mode enabled
+            confDevice = new CANSense(0, false); // Debug mode enabled
             byte[] data = new byte[3]; // Create a byte array with length 3
 
             // Store the first integer at index 0

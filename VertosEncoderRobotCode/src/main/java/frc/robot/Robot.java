@@ -4,16 +4,19 @@
 
 package frc.robot;
 
+import com.ctre.phoenix6.hardware.CANcoder;
+
 import edu.wpi.first.wpilibj.TimedRobot;
 import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
 import edu.wpi.first.wpilibj2.command.Command;
 import edu.wpi.first.wpilibj2.command.CommandScheduler;
-import frc.VendorFiles.main.java.com.vertos.encoder.ParentCANSense;
+import frc.VendorFiles.main.java.com.vertos.encoder.CANSense;
 
 public class Robot extends TimedRobot {
   private Command m_autonomousCommand;
 
- private ParentCANSense encoder = new ParentCANSense(0, true);
+ private CANSense encoder = new CANSense(0, true);
+ private CANcoder canCoder = new CANcoder(2);
 
   private final RobotContainer m_robotContainer;
 
@@ -60,6 +63,8 @@ public class Robot extends TimedRobot {
     if (m_autonomousCommand != null) {
       m_autonomousCommand.cancel();
     }
+
+    encoder.setPosition(2.0);
   }
 
   @Override
