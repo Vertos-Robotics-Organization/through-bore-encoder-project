@@ -32,6 +32,16 @@ public class Robot extends TimedRobot {
     SmartDashboard.putNumber("Encoder Absolute Rotations", encoder.getAbsRotations());
     SmartDashboard.putNumber("Encoder Velocity", encoder.getSensorVelocityRPS());
     SmartDashboard.putNumber("Encoder Accel", encoder.getSensorAccelerationRPS2());
+    SmartDashboard.putBoolean("Encoder Fault: Hardware Failure", encoder.getFault_Hardware());
+    SmartDashboard.putBoolean("Encoder Fault: Boot During Enable", encoder.getFault_BootDuringEnable());
+    SmartDashboard.putBoolean("Encoder Fault: Loop Overrun", encoder.getFault_LoopOverrun());
+    SmartDashboard.putBoolean("Encoder Fault: Bad Magnet", encoder.getFault_BadMagnet());
+    SmartDashboard.putBoolean("Encoder Fault: General CAN Fault", encoder.getFault_CANGeneral());
+    SmartDashboard.putBoolean("Encoder Fault: Momentary CAN Bus Loss", encoder.getFault_MomentaryCanBusLoss());
+    SmartDashboard.putBoolean("Encoder Fault: CAN Clogged", encoder.getFault_CANClogged());
+    SmartDashboard.putBoolean("Encoder Fault: Rotation Overspeed", encoder.getFault_RotationOverspeed());
+    SmartDashboard.putBoolean("Encoder Fault: Under Volted", encoder.getFault_UnderVolted());
+    SmartDashboard.putBoolean("Encoder Connected", encoder.isConnected());
   }
 
   @Override

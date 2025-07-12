@@ -85,6 +85,8 @@ int device_id = 0;
 int pooptest = 1;
 int proxMode = 0;
 int towr = 0;
+int encoder_ready = 0;
+
 
 uint32_t flashAddress = 0x0803F010;  // Example address in Flash memory
 uint64_t writeData;
@@ -215,6 +217,19 @@ uint32_t get_tx_identifier(uint32_t baseCanId, uint32_t apiId) {
     return (baseCanId + device_id) | (apiId << 10);  // Add device_id like Java does
 }
 
+// Add this helper function to unpack IEEE 754 float from big-endian bytes
+float bytes_to_float(uint8_t* bytes, int offset) {
+    uint32_t temp = ((uint32_t)bytes[offset] << 24) |
+                    ((uint32_t)bytes[offset + 1] << 16) |
+                    ((uint32_t)bytes[offset + 2] << 8) |
+                    ((uint32_t)bytes[offset + 3]);
+
+    // Convert uint32_t bits to float
+    float result;
+    memcpy(&result, &temp, sizeof(float));
+    return result;
+}
+
 
 /***************************************************************************************************
  *
@@ -260,25 +275,20 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
         } else if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 12)) {
             invert_encoder_direction(-1);  // INVERT_DIRECTION_API_ID
         } else if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 13)) {  // SET_POSITION_API_ID
-            // Set position logic
+
+        } else if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 14)) {  // SET_POSITION_API_ID
+			set_led_hue((float)0.8, 1.0);
+
             if (RxHeader.DataLength == 8) {
-                int64_t newPosition = ((int64_t) RxData[0] << 56) |
-                                      ((int64_t) RxData[1] << 48) |
-                                      ((int64_t) RxData[2] << 40) |
-                                      ((int64_t) RxData[3] << 32) |
-                                      ((int64_t) RxData[4] << 24) |
-                                      ((int64_t) RxData[5] << 16) |
-                                      ((int64_t) RxData[6] << 8) |
-                                      ((int64_t) RxData[7]);
-                set_counts(newPosition);
+                float newPosition = bytes_to_float(RxData, 0);  // First 4 bytes
+                float timeout = bytes_to_float(RxData, 4);      // Next 4 bytes
+
+                // Convert position from rotations to counts
+                int64_t newCounts = (int64_t)(newPosition * CPR);
+                set_counts(newCounts);
+
+                // You can use the timeout value for any timeout logic you need
             }
-        } else if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 14)) {  // RESET_FACTORY_API_ID
-            // Factory reset logic
-            set_encoder_direction(1);
-            // TODO errase flash memory
-            HAL_FLASH_Unlock();
-            FLASH_PageErase(FLASH_BANK_1, 0x7E);
-            HAL_FLASH_Lock();
         }
 
         // 5. Respond to a "query all devices" command
@@ -441,12 +451,20 @@ int main(void) {
 		HAL_GPIO_WritePin(CAN_ENABLE_GPIO_Port, CAN_ENABLE_Pin, GPIO_PIN_SET); // EN HIGH
 	}
 
-  if (was_reset_during_enable()) {
-      isResetDuringEnable = 1; // Set your boolean status
-      clear_reset_sticky_flag(); // Clear for next detection
-  } else {
-      isResetDuringEnable = 0;
-  }
+    if (mt6835_update_counts(&hspi1) == HAL_OK) {
+        // Wait for a few successful reads before declaring ready
+        for (int i = 0; i < 10; i++) {
+            if (mt6835_update_counts(&hspi1) == HAL_OK) {
+                HAL_Delay(10);
+            } else {
+                break;
+            }
+        }
+        encoder_ready = 1;
+    }
+
+    // Set the flag ONCE to detect future resets
+    set_reset_sticky_flag();
 	/* USER CODE END 2 */
 
 	/* Infinite loop */
@@ -454,7 +472,7 @@ int main(void) {
 	while (1) {
 		uint32_t currentTimeMillisec = HAL_GetTick();
 
-    set_reset_sticky_flag();
+
 
 		/* Flex Encoder Capabilities*/
     // if (flexEncoderMode == 1) {
@@ -487,8 +505,6 @@ int main(void) {
 
 		// Prepare data for CAN transmission
 		// Read the angle as counts
-		mt6835_update_counts(&hspi1);
-		get_counts_single_turn();
 		//mt6835_read_counts(&hspi1);
 
 		//----------------------------------------------------------------------------------------------------------
@@ -497,157 +513,212 @@ int main(void) {
 		int64_t multiTurnCounts = get_counts_multi_turn();
 		uint32_t singleTurnCounts = get_counts_single_turn();
 
-		// Pack multi-turn counts directly as 64-bit value (8 bytes, big-endian)
-		TxDataPosition[0] = (uint8_t)(multiTurnCounts >> 56);  // MSB
-		TxDataPosition[1] = (uint8_t)(multiTurnCounts >> 48);
-		TxDataPosition[2] = (uint8_t)(multiTurnCounts >> 40);
-		TxDataPosition[3] = (uint8_t)(multiTurnCounts >> 32);
-		TxDataPosition[4] = (uint8_t)(multiTurnCounts >> 24);
-		TxDataPosition[5] = (uint8_t)(multiTurnCounts >> 16);
-		TxDataPosition[6] = (uint8_t)(multiTurnCounts >> 8);
-		TxDataPosition[7] = (uint8_t)(multiTurnCounts);        // LSB
+	    if (encoder_ready) {
+	        // Single encoder update call per loop
+	        if (mt6835_update_counts(&hspi1) == HAL_OK) {
 
-		int flexEncoderMode = 1;
+				// Pack multi-turn counts directly as 64-bit value (8 bytes, big-endian)
+				TxDataPosition[0] = (uint8_t)(multiTurnCounts >> 56);  // MSB
+				TxDataPosition[1] = (uint8_t)(multiTurnCounts >> 48);
+				TxDataPosition[2] = (uint8_t)(multiTurnCounts >> 40);
+				TxDataPosition[3] = (uint8_t)(multiTurnCounts >> 32);
+				TxDataPosition[4] = (uint8_t)(multiTurnCounts >> 24);
+				TxDataPosition[5] = (uint8_t)(multiTurnCounts >> 16);
+				TxDataPosition[6] = (uint8_t)(multiTurnCounts >> 8);
+				TxDataPosition[7] = (uint8_t)(multiTurnCounts);        // LSB
 
-		//-----------------------------------------------------------------------------------------------------------
-		// Dynamic Linear Regression velocity and acceleration calculations
-		//-----------------------------------------------------------------------------------------------------------
+				int flexEncoderMode = 1;
 
-    if (prevTimeMillisec != 0) {
-        int64_t deltaCounts = multiTurnCounts - prevMultiTurnCounts;
-        uint32_t deltaTime = currentTimeMillisec - prevTimeMillisec;
+				//-----------------------------------------------------------------------------------------------------------
+				// Dynamic Linear Regression velocity and acceleration calculations
+				//-----------------------------------------------------------------------------------------------------------
 
-        if (deltaTime > 0) {
-			  float velocityCPS = (float)deltaCounts * 1000.0f / (float)deltaTime;
+				if (prevTimeMillisec != 0) {
+					int64_t deltaCounts = multiTurnCounts - prevMultiTurnCounts;
+					uint32_t deltaTime = currentTimeMillisec - prevTimeMillisec;
 
-			  // Low-pass filter for velocity
-			  filteredVelocityCPS = velocity_alpha * velocityCPS + (1.0f - velocity_alpha) * filteredVelocityCPS;
+					if (deltaTime > 0) {
+						  float velocityCPS = (float)deltaCounts * 1000.0f / (float)deltaTime;
 
-			  // Acceleration (backward difference of velocity)
-			  float accelCPS2 = (filteredVelocityCPS - lastVelocityCPS) * 1000.0f / (float)deltaTime;
-			  filteredAccelCPS2 = accel_alpha * accelCPS2 + (1.0f - accel_alpha) * filteredAccelCPS2;
+						  // Low-pass filter for velocity
+						  filteredVelocityCPS = velocity_alpha * velocityCPS + (1.0f - velocity_alpha) * filteredVelocityCPS;
 
-			  velocityCountsScaled = (int32_t)filteredVelocityCPS;
-			  accelCountsScaled = (int32_t)filteredAccelCPS2;
+						  // Acceleration (backward difference of velocity)
+						  float accelCPS2 = (filteredVelocityCPS - lastVelocityCPS) * 1000.0f / (float)deltaTime;
+						  filteredAccelCPS2 = accel_alpha * accelCPS2 + (1.0f - accel_alpha) * filteredAccelCPS2;
 
-			  lastVelocityCPS = filteredVelocityCPS;
-			  lastAccelCPS2 = filteredAccelCPS2;
-        }
-    }
+						  velocityCountsScaled = (int32_t)filteredVelocityCPS;
+						  accelCountsScaled = (int32_t)filteredAccelCPS2;
 
-    prevMultiTurnCounts = multiTurnCounts;
-    prevTimeMillisec = currentTimeMillisec;
+						  lastVelocityCPS = filteredVelocityCPS;
+						  lastAccelCPS2 = filteredAccelCPS2;
+					}
+				}
+
+				prevMultiTurnCounts = multiTurnCounts;
+				prevTimeMillisec = currentTimeMillisec;
 
 
-		// Status 5: Proximity sensor status (based on ADC reading)
-		if (proxMode) {
-			if (HAL_ADC_PollForConversion(&hadc1, 100) == HAL_OK) {
-				int adcValue = HAL_ADC_GetValue(&hadc1);
-			}
-		}
+				// Status 5: Proximity sensor status (based on ADC reading)
+				if (proxMode) {
+					if (HAL_ADC_PollForConversion(&hadc1, 100) == HAL_OK) {
+						int adcValue = HAL_ADC_GetValue(&hadc1);
+					}
+				}
 
-		// Pack all 8 boolean values into a single byte (bit-packed)
-    TxDataBooleanStatus[0] = 0;
-    TxDataBooleanStatus[0] = (isHardwareFault & 0x01) << 0;       // Bit 0: hardware fault status
-    TxDataBooleanStatus[0] = (isLoopOverrun & 0x01) << 1;         // Bit 1: loop overrun status
-    TxDataBooleanStatus[0] = (isCANInvalid & 0x01) << 2;          // Bit 2: CAN communication status
-    TxDataBooleanStatus[0] = (isResetDuringEnable & 0x01) << 3;    // Bit 3: magnet out-of-range status
-    TxDataBooleanStatus[0] = (isMagnetWeakSignal & 0x01) << 4;    // Bit 4: magnet weak signal status
-    TxDataBooleanStatus[0] = (isRotationOverspeed & 0x01) << 5;   // Bit 5: rotation overspeed status
-    TxDataBooleanStatus[0] = (isCANClogged & 0x01) << 6;          // Bit 6: CAN bus clogged status
-    TxDataBooleanStatus[0] = (isUnderVolted & 0x01) << 7;         // Bit 7: under-voltage status
+				TxDataBooleanStatus[0] = 0;  // Start with empty byte: 00000000
+				TxDataBooleanStatus[0] |= (isHardwareFault & 0x01) << 0;       // Add bit 0
+				TxDataBooleanStatus[0] |= (isLoopOverrun & 0x01) << 1;         // Add bit 1
+				TxDataBooleanStatus[0] |= (isCANInvalid & 0x01) << 2;          // Add bit 2
+				TxDataBooleanStatus[0] |= (isResetDuringEnable & 0x01) << 3;   // Add bit 3
+				TxDataBooleanStatus[0] |= (isMagnetWeakSignal & 0x01) << 4;    // Add bit 4
+				TxDataBooleanStatus[0] |= (isRotationOverspeed & 0x01) << 5;   // Add bit 5
+				TxDataBooleanStatus[0] |= (isCANClogged & 0x01) << 6;          // Add bit 6
+				TxDataBooleanStatus[0] |= (isUnderVolted & 0x01) << 7;         // Add bit 7
 
-		// Pack combined velocity and acceleration as 8 bytes (4 bytes velocity + 4 bytes acceleration, both 32-bit signed)
-		// Big-endian format
-		TxDataVelocityAccel[0] = (uint8_t)(velocityCountsScaled >> 24);    // Use scaled values
-		TxDataVelocityAccel[1] = (uint8_t)(velocityCountsScaled >> 16);
-		TxDataVelocityAccel[2] = (uint8_t)(velocityCountsScaled >> 8);
-		TxDataVelocityAccel[3] = (uint8_t)(velocityCountsScaled);          // Velocity LSB
-		TxDataVelocityAccel[4] = (uint8_t)(accelCountsScaled >> 24);       // Use scaled values
-		TxDataVelocityAccel[5] = (uint8_t)(accelCountsScaled >> 16);
-		TxDataVelocityAccel[6] = (uint8_t)(accelCountsScaled >> 8);
-		TxDataVelocityAccel[7] = (uint8_t)(accelCountsScaled);             // Acceleration LSB
+				// Pack combined velocity and acceleration as 8 bytes (4 bytes velocity + 4 bytes acceleration, both 32-bit signed)
+				// Big-endian format
+				TxDataVelocityAccel[0] = (uint8_t)(velocityCountsScaled >> 24);    // Use scaled values
+				TxDataVelocityAccel[1] = (uint8_t)(velocityCountsScaled >> 16);
+				TxDataVelocityAccel[2] = (uint8_t)(velocityCountsScaled >> 8);
+				TxDataVelocityAccel[3] = (uint8_t)(velocityCountsScaled);          // Velocity LSB
+				TxDataVelocityAccel[4] = (uint8_t)(accelCountsScaled >> 24);       // Use scaled values
+				TxDataVelocityAccel[5] = (uint8_t)(accelCountsScaled >> 16);
+				TxDataVelocityAccel[6] = (uint8_t)(accelCountsScaled >> 8);
+				TxDataVelocityAccel[7] = (uint8_t)(accelCountsScaled);             // Acceleration LSB
 
-		// Add message to CAN Tx FIFO queue
-		// Calculate base CAN ID for this device
-		uint32_t baseCanId = BASE_ID + device_id;
+				// Add message to CAN Tx FIFO queue
+				// Calculate base CAN ID for this device
+				uint32_t baseCanId = BASE_ID + device_id;
 
-		// Position message: embed API ID 0 in the CAN arbitration ID (8 bytes - raw counts)
-		TxHeaderPosition.Identifier = baseCanId | (POSITION_API_ID << 10);           // API 0: baseCanId | 0x000
-		// Combined velocity/acceleration message: embed API ID 1 in the CAN arbitration ID (8 bytes)
-		TxHeaderVelocityAccel.Identifier = baseCanId | (VELOCITY_ACCEL_API_ID << 10); // API 1: baseCanId | 0x400
-		// Boolean status message: embed API ID 2 in the CAN arbitration ID (1 byte)
-		TxHeaderBooleanStatus.Identifier = baseCanId | (BOOLEAN_STATUS_API_ID << 10); // API 2: baseCanId | 0x800
+				// Position message: embed API ID 0 in the CAN arbitration ID (8 bytes - raw counts)
+				TxHeaderPosition.Identifier = baseCanId | (POSITION_API_ID << 10);           // API 0: baseCanId | 0x000
+				// Combined velocity/acceleration message: embed API ID 1 in the CAN arbitration ID (8 bytes)
+				TxHeaderVelocityAccel.Identifier = baseCanId | (VELOCITY_ACCEL_API_ID << 10); // API 1: baseCanId | 0x400
+				// Boolean status message: embed API ID 2 in the CAN arbitration ID (1 byte)
+				TxHeaderBooleanStatus.Identifier = baseCanId | (BOOLEAN_STATUS_API_ID << 10); // API 2: baseCanId | 0x800
 
-		// returns HAL_Error if fifo queue is full or CAN is not initialized correctly
-		// HAL_OK otherwise
-		positionCanStatus = HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &TxHeaderPosition, TxDataPosition);
-		velocityAccelCanStatus = HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &TxHeaderVelocityAccel, TxDataVelocityAccel);
-		booleanStatusCanStatus = HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &TxHeaderBooleanStatus, TxDataBooleanStatus);
+				// returns HAL_Error if fifo queue is full or CAN is not initialized correctly
+				// HAL_OK otherwise
+				positionCanStatus = HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &TxHeaderPosition, TxDataPosition);
+				velocityAccelCanStatus = HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &TxHeaderVelocityAccel, TxDataVelocityAccel);
+				booleanStatusCanStatus = HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &TxHeaderBooleanStatus, TxDataBooleanStatus);
 
-    //------------------------------------------------------------------------------------------------------------------------
-    //  Error handling and status updates
-    //--------------------------------------------------------------------------------------------------------
-    if (positionCanStatus != HAL_OK || velocityAccelCanStatus != HAL_OK || booleanStatusCanStatus != HAL_OK) {
-			if ((currentTimeMillisec - lastHeartbeatTime) > HEARTBEAT_TIMEOUT) {
-        isCANInvalid = 1;  // CAN communication failed
 			} else {
-        isCANClogged = 1;  // CAN bus is clogged
+	            // Encoder read failed while ready - handle gracefully
+	            mt6835_error_count++;
+	            if (mt6835_error_count > 10) { // Higher threshold
+	                encoder_ready = 0; // Mark as not ready
+	                isHardwareFault = 1;
+	            }
+
+	            // Set error status but don't flood CAN
+	            positionCanStatus = HAL_ERROR;
+	            velocityAccelCanStatus = HAL_ERROR;
+	            booleanStatusCanStatus = HAL_ERROR;
 			}
 		} else {
-      isCANInvalid = 0;  // CAN communication successful
-      isCANClogged = 0;  // CAN bus is not clogged
-    }
+	        static uint32_t lastInitAttempt = 0;
 
-    if(get_weak_magnetic_field_warning() == 1) {
-      isMagnetWeakSignal = 1;  // Magnet is not in ideal range
-    } else {
-      isMagnetWeakSignal = 0;  // Magnet is in ideal range
-    }
+	        // Only try initialization every 100ms to avoid overwhelming the SPI bus
+	        if ((currentTimeMillisec - lastInitAttempt) >= 100) {
+	            if (mt6835_update_counts(&hspi1) == HAL_OK) {
+	                // Need multiple consecutive successful reads
+	                int success_count = 0;
+	                for (int i = 0; i < 5; i++) {
+	                    HAL_Delay(2); // Small delay between reads
+	                    if (mt6835_update_counts(&hspi1) == HAL_OK) {
+	                        success_count++;
+	                    } else {
+	                        break;
+	                    }
+	                }
 
-    if(get_under_voltage_warning() == 1) {
-      isUnderVolted = 1;  // System is under-volted
-    } else {
-      isUnderVolted = 0;  // System is not under-volted
-    }
+	                if (success_count >= 5) {
+	                    encoder_ready = 1;
+	                    mt6835_error_count = 0;
 
-    if(get_rotation_overspeed_warning() == 1) {
-      isRotationOverspeed = 1;  // Rotation is overspeed
-    } else {
-      isRotationOverspeed = 0;  // Rotation is not overspeed
-    }
+	                    // Reset velocity calculation state
+	                    prevTimeMillisec = 0;
+	                    filteredVelocityCPS = 0.0f;
+	                    filteredAccelCPS2 = 0.0f;
+	                }
+	            }
+	            lastInitAttempt = currentTimeMillisec;
+	        }
 
-    if (mt6835_update_counts(&hspi1) != HAL_OK) {
-        mt6835_error_count++;
-        if (mt6835_error_count > 5) { // threshold for hardware fault
-            isHardwareFault = 1;
-        }
-    } else {
-        mt6835_error_count = 0;
-        isHardwareFault = 0;
-    }
+	        // Set error status for CAN
+	        positionCanStatus = HAL_ERROR;
+	        velocityAccelCanStatus = HAL_ERROR;
+	        booleanStatusCanStatus = HAL_ERROR;
+		}
 
-    // LED status logic for all boolean statuses
-    if (isHardwareFault == 1) {
-        handle_error_blink("SOS", 0.0f); // Red - Hardware fault (emergency) - SOS
-    } else if (isLoopOverrun == 1) {
-        handle_error_blink("M", 0.16f); // Yellow - Overrun - M (dash-dash)
-    } else if (isUnderVolted == 1) {
-        handle_error_blink("I", 0.16f); // Yellow - Under voltage - I (dot-dot)
-    } else if (isRotationOverspeed == 1) {
-        handle_error_blink("S", 0.16f); // Yellow - Rotation Overspeed - S (dot-dot-dot)
-    } else if (isCANInvalid == 1) {
-        handle_error_blink("H", 0.83f); // Purple - CAN Invalid - H (dot-dot-dot-dot)
-    } else if (isCANClogged == 1) {
-        handle_error_blink("5", 0.83f); // Purple - CAN Clogged - 5 (dot-dot-dot-dot-dot)
-    } else if (isResetDuringEnable == 1) {
-        handle_error_blink("O", 0.01f); // Orange - Reset during enable - O (dash-dash-dash)
-    } else if (isMagnetWeakSignal == 1) {
-        handle_error_blink("0", 0.01f); // Orange - Magnet Weak Signal - 0 (dash-dash-dash-dash-dash)
-    } else {
-        // Normal operation: position-based hue
-        set_led_hue((float)singleTurnCounts / CPR, 1.0);
-    }
+		//------------------------------------------------------------------------------------------------------------------------
+		//  Error handling and status updates
+		//--------------------------------------------------------------------------------------------------------
+	    // Only check for clogging if we actually tried to send messages
+	    if (encoder_ready) {
+	        if (positionCanStatus != HAL_OK || velocityAccelCanStatus != HAL_OK || booleanStatusCanStatus != HAL_OK) {
+	            if ((currentTimeMillisec - lastHeartbeatTime) > HEARTBEAT_TIMEOUT) {
+	                isCANInvalid = 1;
+	            } else {
+	                isCANClogged = 1;
+	            }
+	        } else {
+	            isCANInvalid = 0;
+	            isCANClogged = 0;
+	        }
+	    }
+
+		if(get_weak_magnetic_field_warning() == 1) {
+		  isMagnetWeakSignal = 1;  // Magnet is not in ideal range
+		} else {
+		  isMagnetWeakSignal = 0;  // Magnet is in ideal range
+		}
+
+		if(get_under_voltage_warning() == 1) {
+		  isUnderVolted = 1;  // System is under-volted
+		} else {
+		  isUnderVolted = 0;  // System is not under-volted
+		}
+
+		if(get_rotation_overspeed_warning() == 1) {
+		  isRotationOverspeed = 1;  // Rotation is overspeed
+		} else {
+		  isRotationOverspeed = 0;  // Rotation is not overspeed
+		}
+
+		if (mt6835_update_counts(&hspi1) != HAL_OK) {
+			mt6835_error_count++;
+			if (mt6835_error_count > 5) { // threshold for hardware fault
+				isHardwareFault = 1;
+			}
+		} else {
+			mt6835_error_count = 0;
+			isHardwareFault = 0;
+		}
+
+		// LED status logic for all boolean statuses
+		if (isHardwareFault == 1) {
+			handle_error_blink("SOS", 0.0f); // Red - Hardware fault (emergency) - SOS
+		} else if (isLoopOverrun == 1) {
+			handle_error_blink("M", 0.16f); // Yellow - Overrun - M (dash-dash)
+		} else if (isUnderVolted == 1) {
+			handle_error_blink("I", 0.16f); // Yellow - Under voltage - I (dot-dot)
+		} else if (isRotationOverspeed == 1) {
+			handle_error_blink("S", 0.16f); // Yellow - Rotation Overspeed - S (dot-dot-dot)
+		} else if (isCANInvalid == 1) {
+			handle_error_blink("H", 0.83f); // Purple - CAN Invalid - H (dot-dot-dot-dot)
+		} else if (isCANClogged == 1) {
+			handle_error_blink("5", 0.83f); // Purple - CAN Clogged - 5 (dot-dot-dot-dot-dot)
+		} else if (isResetDuringEnable == 1) {
+			handle_error_blink("O", 0.01f); // Orange - Reset during enable - O (dash-dash-dash)
+		} else if (isMagnetWeakSignal == 1) {
+			handle_error_blink("0", 0.01f); // Orange - Magnet Weak Signal - 0 (dash-dash-dash-dash-dash)
+		} else {
+			// Normal operation: position-based hue
+			set_led_hue((float)singleTurnCounts / CPR, 1.0);
+		}
 
 
 		/* CAN Error reading */
@@ -695,10 +766,10 @@ int main(void) {
 		// currentTime is time at START of the loop
 		uint32_t loopTime = HAL_GetTick() - currentTimeMillisec;
 		if (loopTime > TARGET_LOOP_TIME) {
-      isLoopOverrun = 1;  // Set loop overrun status
+			isLoopOverrun = 1;  // Set loop overrun status
 		} else {
-      isLoopOverrun = 0;  // Clear loop overrun status
-    }
+			isLoopOverrun = 0;  // Clear loop overrun status
+		}
 
 	}
     /* USER CODE END WHILE */

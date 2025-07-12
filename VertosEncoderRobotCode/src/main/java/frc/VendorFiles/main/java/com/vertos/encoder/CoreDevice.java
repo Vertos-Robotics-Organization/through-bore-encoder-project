@@ -21,6 +21,8 @@ public class CoreDevice {
 
     private boolean isFaulted = false;
 
+    private final int BASE_ID = 0xA110000;
+
 
     // Variables and Constants
     private final int deviceID;
@@ -36,7 +38,7 @@ public class CoreDevice {
         // Initialize CAN device with the correct base ID
         this.canDevice = new CAN(deviceID, 17, 10);
         this.canData = new CANData();
-        startListening();
+        start();
     }
 
     /**
@@ -51,20 +53,6 @@ public class CoreDevice {
      */
     public void removeListener(CoreDeviceListener listener, int apiID) {
         listenerPairs.removeIf(pair -> Objects.equals(pair.getListener(), listener) && Objects.equals(pair.getAPIID(), apiID));
-    }
-
-    private void startListening() {
-        Executors.newSingleThreadExecutor().submit(() -> {
-            while (true) {
-                devicePeriodic();
-                try {
-                    Thread.sleep(10); // Small delay to prevent busy-waiting
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    break;
-                }
-            }
-        });
     }
 
    /**
@@ -89,14 +77,24 @@ public class CoreDevice {
      * This method checks for new CAN packets and notifies listeners.
      */
     public void devicePeriodic() {
-
         for (Pair<CoreDeviceListener, Integer> listenerPair : listenerPairs) {
-            if (canDevice.readPacketLatest(listenerPair.getAPIID(), canData)) {
-                byte[] receivedData = canData.data;
-                    listenerPair.getListener().onDataReceived(receivedData);
+            try {
+                if (canDevice.readPacketLatest(listenerPair.getAPIID(), canData)) {
+                    // Validate packet before processing
+                    if (canData.data != null && canData.length > 0) {
+                        byte[] receivedData = new byte[canData.length];
+                        System.arraycopy(canData.data, 0, receivedData, 0, canData.length);
+                        listenerPair.getListener().onDataReceived(receivedData);
+                    }
+
+                }
+            } catch (Exception e) {
+                if (debugMode) {
+                    System.out.printf("Error reading CAN data for API %d: %s%n", 
+                        listenerPair.getAPIID(), e.getMessage());
+                }
             }
         }
-
     }
 
     /**
@@ -224,7 +222,6 @@ public class CoreDevice {
     protected boolean sendSimpleCommand(int apiID, String commandName) {
         byte[] commandData = new byte[1];
         commandData[0] = 0x01; // Simple command trigger byte
-        
         boolean success = attemptCanOperation(() -> {
             canDevice.writePacket(commandData, apiID);
             if (debugMode) {
@@ -250,10 +247,17 @@ public class CoreDevice {
      * @return True if the command was sent successfully, false otherwise
      */
     protected boolean sendDoubleCommand(int apiID, double value, String commandName) {
-        byte[] commandData = doubleToByteArray(value);
+        byte[] commandData = new byte[8];
+    
+        // Convert to double (8 bytes)
+        byte[] valueBytes = doubleToByteArray(value);
         
+        // Pack the value into the command data
+        System.arraycopy(valueBytes, 0, commandData, 0, 8);
+
         boolean success = attemptCanOperation(() -> {
-            canDevice.writePacket(commandData, apiID);
+            int CANIdentifyer = (BASE_ID + deviceID) | (apiID << 10);
+            canDevice.writePacket(commandData, CANIdentifyer);
             if (debugMode) {
                 System.out.printf("Device %d: Sent %s command (API_ID=%d, Value=%.6f)%n", 
                                 deviceID, commandName, apiID, value);
@@ -267,7 +271,6 @@ public class CoreDevice {
         
         return success;
     }
-    
     /**
      * Sends a command with a timeout parameter.
      * 
@@ -279,14 +282,15 @@ public class CoreDevice {
      */
     protected boolean sendDoubleWithTimeoutCommand(int apiID, double value, double timeout, String commandName) {
         byte[] commandData = new byte[8];
-        
-        // Convert double to bytes (first 4 bytes for position, next 4 for timeout)
-        byte[] valueBytes = doubleToByteArray(value);
-        byte[] timeoutBytes = doubleToByteArray(timeout);
+    
+        // Convert to float (4 bytes each) instead of double (8 bytes each)
+        byte[] valueBytes = floatToByteArray((float)value);
+        byte[] timeoutBytes = floatToByteArray((float)timeout);
         
         // Pack both values into the command data
         System.arraycopy(valueBytes, 0, commandData, 0, 4);
         System.arraycopy(timeoutBytes, 0, commandData, 4, 4);
+
         
         boolean success = attemptCanOperation(() -> {
             canDevice.writePacket(commandData, apiID);

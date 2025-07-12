@@ -54,9 +54,9 @@ public class CANSense extends CoreDevice implements Sendable, AutoCloseable {
     private static final int ZERO_ENCODER_API_ID = 10;        // API ID for zero encoder command
     private static final int SET_DIRECTION_CLOCKWISE_API_ID = 11;    // API ID for set direction command (same as invert direction)
     private static final int SET_DIRECTION_COUNTER_CLOCKWISE_API_ID = 12; // API ID for set direction counter-clockwise command
-    private static final int CLEAR_FAULTS_API_ID = 13;       // API ID for clear faults command
     private static final int SET_POSITION_API_ID = 14;        // API ID for set position command
     private static final int RESET_FACTORY_API_ID = 15;      // API ID for factory reset command
+
 
     // Command execution state tracking
     private boolean isCommandInProgress = false;
@@ -795,43 +795,50 @@ public class CANSense extends CoreDevice implements Sendable, AutoCloseable {
     private final CoreDeviceListener positionListener = new CoreDeviceListener() {
         @Override
         public void onDataReceived(byte[] data) {
+            synchronized (this) {
                 multiTurnCounts = readCanPacketAsLong(data);
                 absoluteRotations = (double) multiTurnCounts / CountsPerRevolution;
                 relativeRotations = absoluteRotations - Math.floor(absoluteRotations);
+            }
         }
     };
 
     private final CoreDeviceListener velocityAccelListener = new CoreDeviceListener() {
         @Override
         public void onDataReceived(byte[] data) {
+            synchronized (this) {
                 velocityCPS = readCanPacketAs32BitSigned(data, 0);
                 accelerationCPS2 = readCanPacketAs32BitSigned(data, 4);
                 velocityRPS = (double) velocityCPS / CountsPerRevolution;
                 accelerationRPS2 = (double) accelerationCPS2 / CountsPerRevolution;
+            }
         }
     };
 
     private final CoreDeviceListener faultListener = new CoreDeviceListener() {
         @Override
         public void onDataReceived(byte[] data) {
-                byte booleanStatusByte = data[0];
-                isStickyFault_Hardware = (booleanStatusByte & 0x01) != 0;
-                isStickyFault_LoopOverrun = (booleanStatusByte & 0x02) != 0;
-                isStickyFault_CANGeneral = (booleanStatusByte & 0x04) != 0;
-                isStickyFault_BadMagnet = (booleanStatusByte & 0x08) != 0;
-                isStickyFault_MomentaryCanBusLoss = (booleanStatusByte & 0x10) != 0;
-                isStickyFault_RotationOverspeed = (booleanStatusByte & 0x20) != 0;
-                isStickyFault_CANClogged = (booleanStatusByte & 0x40) != 0;
-                isStickyFault_UnderVolted = (booleanStatusByte & 0x80) != 0;
 
-                isFault_Hardware = isStickyFault_Hardware;
-                isFault_LoopOverrun = isStickyFault_LoopOverrun;
-                isFault_CANGeneral = isStickyFault_CANGeneral;
-                isFault_BadMagnet = isStickyFault_BadMagnet;
-                isFault_MomentaryCanBusLoss = isStickyFault_MomentaryCanBusLoss;
-                isFault_RotationOverspeed = isStickyFault_RotationOverspeed;
-                isFault_CANClogged = isStickyFault_CANClogged;
-                isFault_UnderVolted = isStickyFault_UnderVolted;
+            synchronized (this) {
+                byte booleanStatusByte = data[0];
+                isFault_Hardware              = (booleanStatusByte & 0x01) != 0;  // Bit 0
+                isFault_LoopOverrun           = (booleanStatusByte & 0x02) != 0;  // Bit 1
+                isFault_CANGeneral            = (booleanStatusByte & 0x04) != 0;  // Bit 2: isCANInvalid
+                isFault_BootDuringEnable      = (booleanStatusByte & 0x08) != 0;  // Bit 3: isResetDuringEnable
+                isFault_BadMagnet             = (booleanStatusByte & 0x10) != 0;  // Bit 4: isMagnetWeakSignal
+                isFault_RotationOverspeed     = (booleanStatusByte & 0x20) != 0;  // Bit 5
+                isFault_CANClogged            = (booleanStatusByte & 0x40) != 0;  // Bit 6
+                isFault_UnderVolted           = (booleanStatusByte & 0x80) != 0;  // Bit 7
+
+                isStickyFault_Hardware              |= isFault_Hardware;
+                isStickyFault_LoopOverrun           |= isFault_LoopOverrun;
+                isStickyFault_CANGeneral            |= isFault_CANGeneral;
+                isStickyFault_BadMagnet             |= isFault_BadMagnet;
+                isStickyFault_MomentaryCanBusLoss   |= isFault_MomentaryCanBusLoss;
+                isStickyFault_RotationOverspeed     |= isFault_RotationOverspeed;
+                isStickyFault_CANClogged            |= isFault_CANClogged;
+                isStickyFault_UnderVolted           |= isFault_UnderVolted;
+            }
         }
     };
 
