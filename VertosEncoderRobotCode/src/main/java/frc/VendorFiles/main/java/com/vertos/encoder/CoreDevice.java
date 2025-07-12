@@ -44,14 +44,14 @@ public class CoreDevice {
     /**
      * Registers a listener for device events.
      */
-    public void addListener(CoreDeviceListener listener, int apiID) {
+    protected void addListener(CoreDeviceListener listener, int apiID) {
         listenerPairs.add(new Pair<>(listener, apiID));
     }
 
     /**
      * Removes a listener for device events.
      */
-    public void removeListener(CoreDeviceListener listener, int apiID) {
+    protected void removeListener(CoreDeviceListener listener, int apiID) {
         listenerPairs.removeIf(pair -> Objects.equals(pair.getListener(), listener) && Objects.equals(pair.getAPIID(), apiID));
     }
 

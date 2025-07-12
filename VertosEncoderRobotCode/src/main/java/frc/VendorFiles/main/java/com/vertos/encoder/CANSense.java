@@ -815,6 +815,8 @@ public class CANSense extends CoreDevice implements Sendable, AutoCloseable {
         }
     };
 
+    private boolean previousCANFault = false;
+
     private final CoreDeviceListener faultListener = new CoreDeviceListener() {
         @Override
         public void onDataReceived(byte[] data) {
@@ -830,14 +832,22 @@ public class CANSense extends CoreDevice implements Sendable, AutoCloseable {
                 isFault_CANClogged            = (booleanStatusByte & 0x40) != 0;  // Bit 6
                 isFault_UnderVolted           = (booleanStatusByte & 0x80) != 0;  // Bit 7
 
+                isStickyFault_BootDuringEnable      |= isFault_BootDuringEnable;
                 isStickyFault_Hardware              |= isFault_Hardware;
                 isStickyFault_LoopOverrun           |= isFault_LoopOverrun;
                 isStickyFault_CANGeneral            |= isFault_CANGeneral;
                 isStickyFault_BadMagnet             |= isFault_BadMagnet;
-                isStickyFault_MomentaryCanBusLoss   |= isFault_MomentaryCanBusLoss;
                 isStickyFault_RotationOverspeed     |= isFault_RotationOverspeed;
                 isStickyFault_CANClogged            |= isFault_CANClogged;
                 isStickyFault_UnderVolted           |= isFault_UnderVolted;
+
+                boolean currentCANFault = isFault_CANClogged || isFault_CANGeneral;
+
+                if (previousCANFault && !currentCANFault) {
+                    isStickyFault_MomentaryCanBusLoss = true;
+                }
+
+                previousCANFault = currentCANFault;
             }
         }
     };
