@@ -45,25 +45,21 @@ public class CANSense extends CoreDevice implements Sendable, AutoCloseable {
     // Constants for the encoder
     private final double CountsPerRevolution = 2097152.0; // 2 ^ 21
     
-    // API IDs for reading different data types (must match C code)
-    private static final int POSITION_API_ID = 0;          // API ID for position data (8 bytes)
-    private static final int VELOCITY_ACCEL_API_ID = 16;    // API ID for combined velocity and acceleration data (4 bytes)
-    private static final int FAULT_API_ID = 32;            // API ID for hardware fault (legacy)
+    private static final int POSITION_API_ID = 0;          // API ID for position data (8 bytes - 64-bit counts)
+    private static final int VELOCITY_ACCEL_API_ID = 16;    // API ID for combined velocity and acceleration data (8 bytes)
+    private static final int BOOLEAN_STATUS_API_ID = 32;    // API ID for boolean status messages (1 byte)
 
-    // Command API IDs - these should match the encoder firmware
+    // Command API IDs - CORRECTED to match the C code exactly
     private static final int ZERO_ENCODER_API_ID = 10;        // API ID for zero encoder command
-    private static final int SET_DIRECTION_CLOCKWISE_API_ID = 11;    // API ID for set direction command (same as invert direction)
-    private static final int SET_DIRECTION_COUNTER_CLOCKWISE_API_ID = 12; // API ID for set direction counter-clockwise command
-    private static final int SET_POSITION_API_ID = 14;        // API ID for set position command
-    private static final int RESET_FACTORY_API_ID = 15;      // API ID for factory reset command
-
+    private static final int SET_DIRECTION_CLOCKWISE_API_ID = 11;    // API ID for set direction clockwise
+    private static final int SET_DIRECTION_COUNTER_CLOCKWISE_API_ID = 12; // API ID for set direction counter-clockwise
+    private static final int SET_POSITION_API_ID = 13;        // API ID for set position command
+    private static final int RESET_FACTORY_API_ID = 14;      // API ID for factory reset command (if implemented in C)
 
     // Command execution state tracking
     private boolean isCommandInProgress = false;
     private long lastCommandTime = 0;
     private static final long COMMAND_TIMEOUT_MS = 5000; // 5 second timeout for commands
-
-
 
     /**
      * Constructor for CANSense.
@@ -77,7 +73,7 @@ public class CANSense extends CoreDevice implements Sendable, AutoCloseable {
         this.debugMode = debugMode;
         addListener(positionListener, POSITION_API_ID);
         addListener(velocityAccelListener, VELOCITY_ACCEL_API_ID);
-        addListener(faultListener, FAULT_API_ID);
+        addListener(faultListener, BOOLEAN_STATUS_API_ID);  // Changed from FAULT_API_ID to BOOLEAN_STATUS_API_ID
     }
 
     /**
@@ -116,46 +112,6 @@ public class CANSense extends CoreDevice implements Sendable, AutoCloseable {
         
         return false;
     }
-
-    //----------------------------------------------------------------------------------------
-    // Getters for native encoder data (UPDATED)
-    //----------------------------------------------------------------------------------------
-    /**
-     * Returns the raw multi-turn encoder counts.
-     *
-     * @return The multi-turn counts as a long (native encoder units).
-     */
-    public long getMultiTurnCounts() {
-        return multiTurnCounts;
-    }
-    
-    /**
-     * Returns the single-turn encoder counts (0 to CountsPerRevolution-1).
-     *
-     * @return The single-turn counts as a long.
-     */
-    public long getSingleTurnCounts() {
-        return multiTurnCounts % (long)CountsPerRevolution;
-    }
-    
-    /**
-     * Returns the velocity in counts per second.
-     *
-     * @return The velocity in counts per second (now 32-bit).
-     */
-    public int getVelocityCPS() {
-        return velocityCPS;
-    }
-    
-    /**
-     * Returns the acceleration in counts per second squared.
-     *
-     * @return The acceleration in counts per second squared (now 32-bit).
-     */
-    public int getAccelerationCPS2() {
-        return accelerationCPS2;
-    }
-    
 
     //---------------------------------------------------------------------------------------
     // Getters for converted rotation data (UPDATED but kept for compatibility)
@@ -263,7 +219,9 @@ public class CANSense extends CoreDevice implements Sendable, AutoCloseable {
         return velocityRPS * 60.0;
     }
 
-
+    //----------------------------------------------------------------------------------------
+    // Fault Status Methods
+    //----------------------------------------------------------------------------------------
     /**
      * Retrieves the sticky hardware fault status.
      * (Updated to use boolean status data)
@@ -491,7 +449,6 @@ public class CANSense extends CoreDevice implements Sendable, AutoCloseable {
         return isFault_UnderVolted;
     }
 
-
     /**
      * Resets all sticky fault flags to false.
      * This method allows the user to clear all sticky fault statuses.
@@ -507,11 +464,10 @@ public class CANSense extends CoreDevice implements Sendable, AutoCloseable {
         isStickyFault_CANClogged = false;
         isStickyFault_RotationOverspeed = false;
         isStickyFault_UnderVolted = false;
-
     }
 
     //-------------------------------------------------------------------------------------------
-    // Senders - IMPLEMENTED WITH ACTUAL CAN COMMUNICATION
+    // Senders - FIXED IMPLEMENTATIONS WITH PROPER CAN COMMUNICATION
     //-------------------------------------------------------------------------------------------
     /**
      * Sends a command to zero the encoder.
@@ -537,18 +493,15 @@ public class CANSense extends CoreDevice implements Sendable, AutoCloseable {
                 System.out.printf("Device %d: Zero encoder command sent successfully%n", deviceID);
             }
             
-            // Wait for command acknowledgment
-            if (waitForCommandAck(ZERO_ENCODER_API_ID, 2000)) {
-                if (debugMode) {
-                    System.out.printf("Device %d: Zero encoder command acknowledged%n", deviceID);
-                }
-                isCommandInProgress = false;
-                return true;
-            } else {
-                if (debugMode) {
-                    System.out.printf("Device %d: Zero encoder command timeout%n", deviceID);
-                }
+            // Since C code doesn't send acknowledgments, we'll just wait a bit and assume success
+            try {
+                Thread.sleep(100); // Small delay to allow command processing
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
             }
+            
+            isCommandInProgress = false;
+            return true;
         }
 
         isCommandInProgress = false;
@@ -572,25 +525,21 @@ public class CANSense extends CoreDevice implements Sendable, AutoCloseable {
         isCommandInProgress = true;
         lastCommandTime = System.currentTimeMillis();
 
-        boolean success = sendSimpleCommand(SET_DIRECTION_CLOCKWISE_API_ID, "Set Direction Counter-Clockwise");
+        boolean success = sendSimpleCommand(SET_DIRECTION_COUNTER_CLOCKWISE_API_ID, "Set Direction Counter-Clockwise");
         
         if (success) {
             if (debugMode) {
                 System.out.printf("Device %d: Set direction counter-clockwise command sent successfully%n", deviceID);
             }
             
-            // Wait for command acknowledgment
-            if (waitForCommandAck(SET_DIRECTION_COUNTER_CLOCKWISE_API_ID, 2000)) {
-                if (debugMode) {
-                    System.out.printf("Device %d: Set direction counter-clockwise command acknowledged%n", deviceID);
-                }
-                isCommandInProgress = false;
-                return true;
-            } else {
-                if (debugMode) {
-                    System.out.printf("Device %d: Set direction counter-clockwise command timeout%n", deviceID);
-                }
+            try {
+                Thread.sleep(100); // Small delay to allow command processing
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
             }
+            
+            isCommandInProgress = false;
+            return true;
         }
 
         isCommandInProgress = false;
@@ -621,18 +570,14 @@ public class CANSense extends CoreDevice implements Sendable, AutoCloseable {
                 System.out.printf("Device %d: Set direction clockwise command sent successfully%n", deviceID);
             }
             
-            // Wait for command acknowledgment
-            if (waitForCommandAck(SET_DIRECTION_CLOCKWISE_API_ID, 2000)) {
-                if (debugMode) {
-                    System.out.printf("Device %d: Set direction clockwise command acknowledged%n", deviceID);
-                }
-                isCommandInProgress = false;
-                return true;
-            } else {
-                if (debugMode) {
-                    System.out.printf("Device %d: Set direction clockwise command timeout%n", deviceID);
-                }
+            try {
+                Thread.sleep(100); // Small delay to allow command processing
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
             }
+            
+            isCommandInProgress = false;
+            return true;
         }
 
         isCommandInProgress = false;
@@ -667,6 +612,8 @@ public class CANSense extends CoreDevice implements Sendable, AutoCloseable {
         isCommandInProgress = true;
         lastCommandTime = System.currentTimeMillis();
 
+        position = position * CountsPerRevolution;
+
         boolean success = sendDoubleWithTimeoutCommand(SET_POSITION_API_ID, position, timeout, "Set Position");
         
         if (success) {
@@ -675,19 +622,15 @@ public class CANSense extends CoreDevice implements Sendable, AutoCloseable {
                                 deviceID, position, timeout);
             }
             
-            // Wait for command acknowledgment (use timeout parameter converted to ms)
-            long timeoutMs = Math.max(1000, (long)(timeout * 1000) + 1000); // At least 1 second, plus command timeout
-            if (waitForCommandAck(SET_POSITION_API_ID, timeoutMs)) {
-                if (debugMode) {
-                    System.out.printf("Device %d: Set position command acknowledged%n", deviceID);
-                }
-                isCommandInProgress = false;
-                return true;
-            } else {
-                if (debugMode) {
-                    System.out.printf("Device %d: Set position command timeout%n", deviceID);
-                }
+            // Wait for the timeout period plus a bit extra
+            try {
+                Thread.sleep((long)(timeout * 1000) + 100);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
             }
+            
+            isCommandInProgress = false;
+            return true;
         }
 
         isCommandInProgress = false;
@@ -718,27 +661,23 @@ public class CANSense extends CoreDevice implements Sendable, AutoCloseable {
                 System.out.printf("Device %d: Factory reset command sent successfully%n", deviceID);
             }
             
-            // Factory reset may take longer, so use extended timeout
-            if (waitForCommandAck(RESET_FACTORY_API_ID, 5000)) {
-                if (debugMode) {
-                    System.out.printf("Device %d: Factory reset command acknowledged%n", deviceID);
-                }
-                
-                // Clear local fault states after factory reset
-                isStickyFault_Hardware = false;
-                isStickyFault_CANGeneral = false;
-                isStickyFault_LoopOverrun = false;
-                isStickyFault_MomentaryCanBusLoss = false;
-                isStickyFault_BootDuringEnable = false;
-                isStickyFault_BadMagnet = false;
-                
-                isCommandInProgress = false;
-                return true;
-            } else {
-                if (debugMode) {
-                    System.out.printf("Device %d: Factory reset command timeout%n", deviceID);
-                }
+            // Factory reset may take longer
+            try {
+                Thread.sleep(1000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
             }
+            
+            // Clear local fault states after factory reset
+            isStickyFault_Hardware = false;
+            isStickyFault_CANGeneral = false;
+            isStickyFault_LoopOverrun = false;
+            isStickyFault_MomentaryCanBusLoss = false;
+            isStickyFault_BootDuringEnable = false;
+            isStickyFault_BadMagnet = false;
+            
+            isCommandInProgress = false;
+            return true;
         }
 
         isCommandInProgress = false;
@@ -783,7 +722,6 @@ public class CANSense extends CoreDevice implements Sendable, AutoCloseable {
     @Override
     public void close() throws Exception {
         SendableRegistry.remove(this);
-
     }
 
     @Override
@@ -820,7 +758,6 @@ public class CANSense extends CoreDevice implements Sendable, AutoCloseable {
     private final CoreDeviceListener faultListener = new CoreDeviceListener() {
         @Override
         public void onDataReceived(byte[] data) {
-
             synchronized (this) {
                 byte booleanStatusByte = data[0];
                 isFault_Hardware              = (booleanStatusByte & 0x01) != 0;  // Bit 0
@@ -851,6 +788,5 @@ public class CANSense extends CoreDevice implements Sendable, AutoCloseable {
             }
         }
     };
-
-
 }
+

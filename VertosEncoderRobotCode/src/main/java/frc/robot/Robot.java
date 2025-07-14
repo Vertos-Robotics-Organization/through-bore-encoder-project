@@ -41,7 +41,7 @@ public class Robot extends TimedRobot {
     SmartDashboard.putBoolean("Encoder Fault: CAN Clogged", encoder.getFault_CANClogged());
     SmartDashboard.putBoolean("Encoder Fault: Rotation Overspeed", encoder.getFault_RotationOverspeed());
     SmartDashboard.putBoolean("Encoder Fault: Under Volted", encoder.getFault_UnderVolted());
-    SmartDashboard.putBoolean("Encoder Connected", encoder.isConnected());
+    //SmartDashboard.putBoolean("Encoder Connected", encoder.isConnected());
   }
 
   @Override

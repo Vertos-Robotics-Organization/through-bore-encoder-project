@@ -275,22 +275,18 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
         } else if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 12)) {
             invert_encoder_direction(-1);  // INVERT_DIRECTION_API_ID
         } else if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 13)) {  // SET_POSITION_API_ID
-
-        } else if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 14)) {  // SET_POSITION_API_ID
-			set_led_hue((float)0.8, 1.0);
-
-            if (RxHeader.DataLength == 8) {
+        	if (RxHeader.DataLength == 8) {
                 float newPosition = bytes_to_float(RxData, 0);  // First 4 bytes
                 float timeout = bytes_to_float(RxData, 4);      // Next 4 bytes
 
                 // Convert position from rotations to counts
                 int64_t newCounts = (int64_t)(newPosition * CPR);
                 set_counts(newCounts);
-
                 // You can use the timeout value for any timeout logic you need
             }
-        }
+        } else if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 14)) {
 
+        }
         // 5. Respond to a "query all devices" command
         else if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 44)) {
             uint32_t uid[3];
@@ -918,8 +914,8 @@ static void MX_FDCAN1_Init(void) {
 
 	sFilterConfig.FilterConfig = FDCAN_FILTER_TO_RXFIFO0;
 
-  sFilterConfig.FilterID1 = 0xA110000;  // Base ID for your device
-  sFilterConfig.FilterID2 = 0xA120000;  // Allow wider range for all API IDs
+	sFilterConfig.FilterID1 = 0xA110000;  // Base ID
+	sFilterConfig.FilterID2 = 0xA11FFFF;  // Much wider range to catch all API IDs
 
 	//sFilterConfig.RxBufferIndex = 0;
 	if (HAL_FDCAN_ConfigFilter(&hfdcan1, &sFilterConfig) != HAL_OK) {

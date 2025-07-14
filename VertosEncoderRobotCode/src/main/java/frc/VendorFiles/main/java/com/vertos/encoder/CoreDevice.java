@@ -23,7 +23,6 @@ public class CoreDevice {
 
     private final int BASE_ID = 0xA110000;
 
-
     // Variables and Constants
     private final int deviceID;
     private boolean debugMode;
@@ -35,7 +34,8 @@ public class CoreDevice {
         this.deviceID = deviceID;
         this.debugMode = debugMode;
         
-        // Initialize CAN device with the correct base ID
+        // Initialize CAN device with the correct base ID + device ID
+        // This should match how the C code calculates identifiers
         this.canDevice = new CAN(deviceID, 17, 10);
         this.canData = new CANData();
         start();
@@ -73,12 +73,29 @@ public class CoreDevice {
     }
 
     /**
+     * Calculate the correct CAN identifier for receiving data
+     * This matches the C code: baseCanId | (apiId << 10)
+     */
+    private int getRxIdentifier(int apiId) {
+        return (BASE_ID + deviceID) | (apiId << 10);
+    }
+
+    /**
+     * Calculate the correct CAN identifier for sending commands
+     * This should match what the C code expects to receive
+     */
+    private int getTxIdentifier(int apiId) {
+        return (BASE_ID + deviceID) | (apiId << 10);
+    }
+
+    /**
      * Periodic method to read data from the CAN device.
      * This method checks for new CAN packets and notifies listeners.
      */
     public void devicePeriodic() {
         for (Pair<CoreDeviceListener, Integer> listenerPair : listenerPairs) {
             try {
+                
                 if (canDevice.readPacketLatest(listenerPair.getAPIID(), canData)) {
                     // Validate packet before processing
                     if (canData.data != null && canData.length > 0) {
@@ -86,7 +103,6 @@ public class CoreDevice {
                         System.arraycopy(canData.data, 0, receivedData, 0, canData.length);
                         listenerPair.getListener().onDataReceived(receivedData);
                     }
-
                 }
             } catch (Exception e) {
                 if (debugMode) {
@@ -186,7 +202,6 @@ public class CoreDevice {
         return value;
     }
 
-
     /**
      * Polls the CAN device for a single byte of data.
      *
@@ -209,7 +224,7 @@ public class CoreDevice {
     }
 
     //-------------------------------------------------------------------------------------------------------------------
-    // Command Sending Methods
+    // Command Sending Methods - FIXED
     //-------------------------------------------------------------------------------------------------------------------
     
     /**
@@ -222,11 +237,13 @@ public class CoreDevice {
     protected boolean sendSimpleCommand(int apiID, String commandName) {
         byte[] commandData = new byte[1];
         commandData[0] = 0x01; // Simple command trigger byte
+        
         boolean success = attemptCanOperation(() -> {
-            canDevice.writePacket(commandData, apiID);
+            int canId = getRxIdentifier(apiID);
+            canDevice.writePacket(commandData, canId);
             if (debugMode) {
-                System.out.printf("Device %d: Sent %s command (API_ID=%d)%n", 
-                                deviceID, commandName, apiID);
+                System.out.printf("Device %d: Sent %s command (CAN_ID=0x%X, API_ID=%d)%n", 
+                                deviceID, commandName, canId, apiID);
             }
             return true;
         }, apiID, false);
@@ -256,11 +273,11 @@ public class CoreDevice {
         System.arraycopy(valueBytes, 0, commandData, 0, 8);
 
         boolean success = attemptCanOperation(() -> {
-            int CANIdentifyer = (BASE_ID + deviceID) | (apiID << 10);
-            canDevice.writePacket(commandData, CANIdentifyer);
+            int canId = getTxIdentifier(apiID);
+            canDevice.writePacket(commandData, canId);
             if (debugMode) {
-                System.out.printf("Device %d: Sent %s command (API_ID=%d, Value=%.6f)%n", 
-                                deviceID, commandName, apiID, value);
+                System.out.printf("Device %d: Sent %s command (CAN_ID=0x%X, API_ID=%d, Value=%.6f)%n", 
+                                deviceID, commandName, canId, apiID, value);
             }
             return true;
         }, apiID, false);
@@ -271,6 +288,7 @@ public class CoreDevice {
         
         return success;
     }
+
     /**
      * Sends a command with a timeout parameter.
      * 
@@ -283,7 +301,7 @@ public class CoreDevice {
     protected boolean sendDoubleWithTimeoutCommand(int apiID, double value, double timeout, String commandName) {
         byte[] commandData = new byte[8];
     
-        // Convert to float (4 bytes each) instead of double (8 bytes each)
+        // Convert to float (4 bytes each) to match C code expectation
         byte[] valueBytes = floatToByteArray((float)value);
         byte[] timeoutBytes = floatToByteArray((float)timeout);
         
@@ -291,12 +309,12 @@ public class CoreDevice {
         System.arraycopy(valueBytes, 0, commandData, 0, 4);
         System.arraycopy(timeoutBytes, 0, commandData, 4, 4);
 
-        
         boolean success = attemptCanOperation(() -> {
-            canDevice.writePacket(commandData, apiID);
+            int canId = getTxIdentifier(apiID);
+            canDevice.writePacket(commandData, canId);
             if (debugMode) {
-                System.out.printf("Device %d: Sent %s command (API_ID=%d, Value=%.6f, Timeout=%.3f)%n", 
-                                deviceID, commandName, apiID, value, timeout);
+                System.out.printf("Device %d: Sent %s command (CAN_ID=0x%X, API_ID=%d, Value=%.6f, Timeout=%.3f)%n", 
+                                deviceID, commandName, canId, apiID, value, timeout);
             }
             return true;
         }, apiID, false);
@@ -310,6 +328,7 @@ public class CoreDevice {
     
     /**
      * Waits for a command acknowledgment from the encoder.
+     * Note: The C code doesn't appear to send acknowledgments, so this may always timeout
      * 
      * @param apiID The API ID to listen for acknowledgment
      * @param timeoutMs Maximum time to wait for acknowledgment in milliseconds
@@ -319,7 +338,8 @@ public class CoreDevice {
         long startTime = System.currentTimeMillis();
         
         while (System.currentTimeMillis() - startTime < timeoutMs) {
-            if (canDevice.readPacketLatest(apiID + 100, canData)) { // Ack API is command API + 100
+            int ackCanId = getTxIdentifier(apiID + 100); // Ack API is command API + 100
+            if (canDevice.readPacketLatest(ackCanId, canData)) {
                 if (canData.length >= 1 && canData.data[0] == (byte)0xAC) { // 0xAC = acknowledgment byte
                     if (debugMode) {
                         System.out.printf("Device %d: Received command acknowledgment for API %d%n", 
@@ -354,10 +374,11 @@ public class CoreDevice {
      */
     public void sendPacket(int apiID, byte[] data) {
         attemptCanOperation(() -> {
-            canDevice.writePacket(data, apiID);
+            int canId = getTxIdentifier(apiID);
+            canDevice.writePacket(data, canId);
             if (debugMode) {
-                System.out.printf("Device %d: Sent CAN Packet: API_ID=%d, Data=%s%n",
-                        deviceID, apiID, bytesToHex(data));
+                System.out.printf("Device %d: Sent CAN Packet: CAN_ID=0x%X, API_ID=%d, Data=%s%n",
+                        deviceID, canId, apiID, bytesToHex(data));
             }
             return true; // Success
         }, apiID, false);
@@ -375,8 +396,10 @@ public class CoreDevice {
         boolean packetReceived;
         int responseCount = 0;
 
+        int queryCanId = getTxIdentifier(QUERY_API_ID);
+
         do {
-            packetReceived = canDevice.readPacketNew(QUERY_API_ID, canData);
+            packetReceived = canDevice.readPacketNew(queryCanId, canData);
             if (packetReceived) {
                 responseCount++;
                 byte[] dataCopy = new byte[canData.length];
@@ -489,7 +512,8 @@ public class CoreDevice {
         sendPacket(QUERY_API_ID, queryData);
 
         // Attempt to read a response packet
-        boolean packetReceived = canDevice.readPacketNew(QUERY_API_ID, canData);
+        int queryCanId = getTxIdentifier(QUERY_API_ID);
+        boolean packetReceived = canDevice.readPacketNew(queryCanId, canData);
 
         if (debugMode) {
             if (packetReceived) {
@@ -510,7 +534,8 @@ public class CoreDevice {
      */
     private boolean readFaultStatus(int apiID) {
         return attemptCanOperation(() -> {
-            if (canDevice.readPacketLatest(apiID, canData)) {
+            int canId = getRxIdentifier(apiID);
+            if (canDevice.readPacketLatest(canId, canData)) {
                 byte[] receivedData = canData.data;
                 if (canData.length >= 1) {
                     return (receivedData[0] & 0x01) != 0;
@@ -560,8 +585,6 @@ public class CoreDevice {
         
         return value;
     }
-
-
     
     // Helper class to represent a pair of CoreDeviceListener and Integer
     private static class Pair<T, U> {

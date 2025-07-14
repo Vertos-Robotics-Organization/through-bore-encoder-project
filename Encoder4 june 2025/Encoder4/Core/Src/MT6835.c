@@ -232,7 +232,7 @@ void set_counts(int64_t counts)
 {
     // Set the multi-turn counts and reset single-turn counts
     multiTurnSensorCounts = counts; // Extract multi-turn part
-    singleTurnSensorCounts = counts; // Extract single-turn part
+    singleTurnSensorCounts = (int32_t)counts; // Extract single-turn part
 }
 
 void set_encoder_direction(int dir) {
