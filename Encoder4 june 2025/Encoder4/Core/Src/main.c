@@ -26,6 +26,7 @@
 #include "non_blocking_morse.h"
 #include "error_blink.h"
 #include "flex_encoder.h"
+#include "flash_config.h"
 
 #include "stm32g0xx_hal_flash.h"
 /* USER CODE END Includes */
@@ -118,8 +119,6 @@ double sensorAccel = 0.0;
 //--------------------------------------------------------------------------------
 // Store current sample
 // Simple backward difference velocity calculation with low-pass filtering
-static float velocity_alpha = 0.2f; // Low-pass filter coefficient (0.0 - 1.0)
-static float accel_alpha = 0.1f;    // Lower for acceleration
 
 static int64_t prevMultiTurnCounts = 0;
 static uint32_t prevTimeMillisec = 0;
@@ -213,22 +212,20 @@ uint8_t RxData[64] = { 0 };
 int indx = 0;
 uint8_t count = 0;
 
+#define device_id           flash_get_device_id()
+#define velocity_alpha      flash_get_velocity_alpha()
+#define accel_alpha         flash_get_accel_alpha()
+
+// Function to update filter values in real-time
+void update_filter_settings(float vel_alpha, float acc_alpha) {
+    flash_set_velocity_alpha(vel_alpha);
+    flash_set_accel_alpha(acc_alpha);
+}
+
 uint32_t get_tx_identifier(uint32_t baseCanId, uint32_t apiId) {
     return (baseCanId + device_id) | (apiId << 10);  // Add device_id like Java does
 }
 
-// Add this helper function to unpack IEEE 754 float from big-endian bytes
-float bytes_to_float(uint8_t* bytes, int offset) {
-    uint32_t temp = ((uint32_t)bytes[offset] << 24) |
-                    ((uint32_t)bytes[offset + 1] << 16) |
-                    ((uint32_t)bytes[offset + 2] << 8) |
-                    ((uint32_t)bytes[offset + 3]);
-
-    // Convert uint32_t bits to float
-    float result;
-    memcpy(&result, &temp, sizeof(float));
-    return result;
-}
 
 
 /***************************************************************************************************
@@ -255,40 +252,24 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
         }
 
         // 4. Handle specific command messages based on RxHeader.Identifier
+        // Device management commands (41-44)
         if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 41)) {
-            device_id = RxData[2];
-            TxHeaderPosition.Identifier = BASE_ID + device_id;
-            writeData = TxHeaderPosition.Identifier;
-            towr = 1;
+            // UPDATED: Use flash system instead of old method
+            uint32_t new_device_id = RxData[2];
+            flash_set_device_id(new_device_id);
+            TxHeaderPosition.Identifier = BASE_ID + new_device_id;
+            // REMOVED: writeData = TxHeaderPosition.Identifier;
+            // REMOVED: towr = 1;
+
         } else if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 42)) {
             pooptest = 1;
+
         } else if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 43)) {
-            HAL_FLASH_Unlock();
-            FLASH_PageErase(FLASH_BANK_1, 0x7E);
-            HAL_FLASH_Lock();
-        } else if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 10)) {  // ZERO_ENCODER_API_ID
-            // Zero the encoder
-            reset_counts();
-        } else if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 11)) {  // INVERT_DIRECTION_API_ID
-            // Invert direction logic clockwise
-            invert_encoder_direction(1);
-        } else if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 12)) {
-            invert_encoder_direction(-1);  // INVERT_DIRECTION_API_ID
-        } else if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 13)) {  // SET_POSITION_API_ID
-        	if (RxHeader.DataLength == 8) {
-                float newPosition = bytes_to_float(RxData, 0);  // First 4 bytes
-                float timeout = bytes_to_float(RxData, 4);      // Next 4 bytes
+            // UPDATED: Use flash system factory reset
+            flash_factory_reset();
 
-                // Convert position from rotations to counts
-                int64_t newCounts = (int64_t)(newPosition * CPR);
-                set_counts(newCounts);
-                // You can use the timeout value for any timeout logic you need
-            }
-        } else if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 14)) {
-
-        }
-        // 5. Respond to a "query all devices" command
-        else if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 44)) {
+        } else if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 44)) {
+            // Query all devices - send device UID (keep existing code)
             uint32_t uid[3];
             uid[0] = HAL_GetUIDw0();
             uid[1] = HAL_GetUIDw1();
@@ -309,10 +290,68 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
             TxHeaderPosition.DataLength = 8;
             TxHeaderPosition.Identifier = BASE_ID + device_id_index;
             HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &TxHeaderPosition, uidBytes);
-            TxHeaderPosition.Identifier = BASE_ID + device_id;
+            TxHeaderPosition.Identifier = BASE_ID + flash_get_device_id();  // UPDATED
+        }
+        // Encoder control commands (10-13) - matching Java API IDs
+        else if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 10)) {
+            // Zero the encoder
+            reset_counts();
+        } else if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 11)) {
+            // UPDATED: Set encoder direction and save to flash
+            if (RxHeader.DataLength >= 1) {
+                int direction = (RxData[0] != 0) ? 1 : 0;
+                flash_set_encoder_direction(direction);
+                set_encoder_direction(direction);  // Also update runtime
+            }
+        } else if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 12)) {
+            set_led_hue(1.0f,1.0);
+            if (RxHeader.DataLength == 8) {
+                // Read all 8 bytes directly as int64_t (big-endian)
+                int64_t newCounts = ((int64_t)RxData[0] << 56) |
+                                   ((int64_t)RxData[1] << 48) |
+                                   ((int64_t)RxData[2] << 40) |
+                                   ((int64_t)RxData[3] << 32) |
+                                   ((int64_t)RxData[4] << 24) |
+                                   ((int64_t)RxData[5] << 16) |
+                                   ((int64_t)RxData[6] << 8) |
+                                   ((int64_t)RxData[7]);
+
+                // UPDATED: Save position offset to flash
+                flash_set_position_offset(newCounts);
+                set_counts(newCounts);
+            }
+        } else if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 13)) {
+            // UPDATED: Factory reset using flash system
+            if (RxHeader.DataLength >= 1 && RxData[0] != 0) {
+                flash_factory_reset();
+
+                // Reset runtime state
+                reset_counts();
+                set_encoder_direction(0);
+
+                // Update CAN ID
+                TxHeaderPosition.Identifier = BASE_ID + flash_get_device_id();
+            }
+        }
+
+        // ADD NEW COMMANDS for filter tuning (API IDs 20-21)
+        else if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 20)) {
+            // Set velocity filter alpha
+            if (RxHeader.DataLength == 4) {
+                float new_alpha;
+                memcpy(&new_alpha, RxData, sizeof(float));
+                flash_set_velocity_alpha(new_alpha);
+            }
+        } else if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 21)) {
+            // Set acceleration filter alpha
+            if (RxHeader.DataLength == 4) {
+                float new_alpha;
+                memcpy(&new_alpha, RxData, sizeof(float));
+                flash_set_accel_alpha(new_alpha);
+            }
         }
     }
-} /* Emd pf HAL_FDCAN_RxFifo0Callback */
+}
 
 /* USER CODE END 0 */
 
@@ -400,6 +439,13 @@ int main(void) {
   //		HAL_Delay(5); // Delay 10 ms to achieve 1-second total duration
   //	}
 
+    if (flash_config_init() != HAL_OK) {
+        // Flash initialization failed - use defaults but continue
+        Error_Handler();
+    }
+
+    flash_increment_boot_count();
+
 	if (HAL_FDCAN_Start(&hfdcan1) != HAL_OK) {
 		Error_Handler();
 		isCANInvalid = 0;  // CAN initialization failed
@@ -416,6 +462,9 @@ int main(void) {
 	} else {
 		TxHeaderPosition.Identifier = (uint32_t) readData;
 	}
+
+    TxHeaderPosition.Identifier = BASE_ID + flash_get_device_id();
+
 
 	// Configure position message header (8 bytes)
 	txHeaderConfigure(&TxHeaderPosition);
@@ -460,7 +509,7 @@ int main(void) {
     }
 
     // Set the flag ONCE to detect future resets
-    set_reset_sticky_flag();
+    flash_set_reset_sticky_flag(0xDEADBEEF);
 	/* USER CODE END 2 */
 
 	/* Infinite loop */
@@ -483,17 +532,11 @@ int main(void) {
     //     //HAL_Delay(2000);
     // }
 
-
+		towr = 1;
 		if (towr == 1) {
 			towr = 0;
-			// my page erase thing messes this up
-			HAL_FLASH_Unlock();
-			HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD,
-							  flashAddress,
-							  writeData
-			);
-			HAL_FLASH_Lock();
-			isRotationOverspeed = 1;  // Flash write successful
+			flash_set_device_id(2);
+			flash_set_velocity_alpha(0.5);
 		}
 
 		// Read the angle and set LED hue
@@ -529,27 +572,29 @@ int main(void) {
 				// Dynamic Linear Regression velocity and acceleration calculations
 				//-----------------------------------------------------------------------------------------------------------
 
-				if (prevTimeMillisec != 0) {
+				 if (prevTimeMillisec != 0) {
 					int64_t deltaCounts = multiTurnCounts - prevMultiTurnCounts;
 					uint32_t deltaTime = currentTimeMillisec - prevTimeMillisec;
 
 					if (deltaTime > 0) {
-						  float velocityCPS = (float)deltaCounts * 1000.0f / (float)deltaTime;
+						float velocityCPS = (float)deltaCounts * 1000.0f / (float)deltaTime;
 
-						  // Low-pass filter for velocity
-						  filteredVelocityCPS = velocity_alpha * velocityCPS + (1.0f - velocity_alpha) * filteredVelocityCPS;
+						// Use flash-stored filter coefficients
+						float vel_alpha = flash_get_velocity_alpha();
+						float acc_alpha = flash_get_accel_alpha();
 
-						  // Acceleration (backward difference of velocity)
-						  float accelCPS2 = (filteredVelocityCPS - lastVelocityCPS) * 1000.0f / (float)deltaTime;
-						  filteredAccelCPS2 = accel_alpha * accelCPS2 + (1.0f - accel_alpha) * filteredAccelCPS2;
+						filteredVelocityCPS = vel_alpha * velocityCPS + (1.0f - vel_alpha) * filteredVelocityCPS;
+						float accelCPS2 = (filteredVelocityCPS - lastVelocityCPS) * 1000.0f / (float)deltaTime;
+						filteredAccelCPS2 = acc_alpha * accelCPS2 + (1.0f - acc_alpha) * filteredAccelCPS2;
 
-						  velocityCountsScaled = (int32_t)filteredVelocityCPS;
-						  accelCountsScaled = (int32_t)filteredAccelCPS2;
+						velocityCountsScaled = (int32_t)filteredVelocityCPS;
+						accelCountsScaled = (int32_t)filteredAccelCPS2;
 
-						  lastVelocityCPS = filteredVelocityCPS;
-						  lastAccelCPS2 = filteredAccelCPS2;
+						lastVelocityCPS = filteredVelocityCPS;
+						lastAccelCPS2 = filteredAccelCPS2;
 					}
 				}
+
 
 				prevMultiTurnCounts = multiTurnCounts;
 				prevTimeMillisec = currentTimeMillisec;
@@ -1303,50 +1348,46 @@ static void MX_GPIO_Init(void) {
 // Helper Functions
 //-----------------------------------------------------------------------------------------------
 
-// Function to set the sticky flag
-void set_reset_sticky_flag(void) {
-    HAL_FLASH_Unlock();
-    HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, RESET_STICKY_FLAG_ADDR, 0xDEADBEEF);
-    HAL_FLASH_Lock();
-}
-
-// Function to clear the sticky flag
-void clear_reset_sticky_flag(void) {
-    HAL_FLASH_Unlock();
-    HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, RESET_STICKY_FLAG_ADDR, 0xFFFFFFFF);
-    HAL_FLASH_Lock();
-}
-
-// Function to check the sticky flag
-int was_reset_during_enable(void) {
-    uint64_t flag = *((uint64_t*)RESET_STICKY_FLAG_ADDR);
-    return (flag == 0xDEADBEEF);
-}
-
-
-//-----------------------------------------------------------------------------------------------
-// Public API Functions
-//-----------------------------------------------------------------------------------------------
 /**
- * @brief Set the velocity low-pass filter alpha value.
- * @param alpha New alpha value (0.0f - 1.0f)
+ * @brief Update encoder direction from CAN command
  */
-void set_velocity_alpha(float alpha) {
-  if (alpha >= 0.0f && alpha <= 1.0f) {
-    velocity_alpha = alpha;
-  }
+void set_encoder_direction_with_flash(uint8_t direction) {
+    flash_set_encoder_direction(direction);
+    set_encoder_direction(direction);  // Update runtime setting
 }
-
 
 /**
- * @brief Set the acceleration low-pass filter alpha value.
- * @param alpha New alpha value (0.0f - 1.0f)
+ * @brief Update position offset from CAN command
  */
-void set_accel_alpha(float alpha) {
-  if (alpha >= 0.0f && alpha <= 1.0f) {
-    accel_alpha = alpha;
-  }
+void set_position_offset_with_flash(int64_t offset) {
+    flash_set_position_offset(offset);
+    set_counts(offset);  // Update runtime position
 }
+
+/**
+ * @brief Get current filter settings for runtime use
+ */
+void get_current_filter_settings(float* vel_alpha, float* acc_alpha) {
+    if (vel_alpha) *vel_alpha = flash_get_velocity_alpha();
+    if (acc_alpha) *acc_alpha = flash_get_accel_alpha();
+}
+
+/**
+ * @brief Update filter settings from external source (CAN, USB, etc.)
+ */
+HAL_StatusTypeDef update_filter_settings_safe(float vel_alpha, float acc_alpha) {
+    // Validate ranges
+    if (vel_alpha < 0.0f || vel_alpha > 1.0f || acc_alpha < 0.0f || acc_alpha > 1.0f) {
+        return HAL_ERROR;
+    }
+
+    // Update both settings
+    HAL_StatusTypeDef status1 = flash_set_velocity_alpha(vel_alpha);
+    HAL_StatusTypeDef status2 = flash_set_accel_alpha(acc_alpha);
+
+    return (status1 == HAL_OK && status2 == HAL_OK) ? HAL_OK : HAL_ERROR;
+}
+
 
 //-----------------------------------------------------------------------------------------------
 // Header Configuration Functions

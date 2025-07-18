@@ -38,7 +38,6 @@ public class CoreDevice {
         // This should match how the C code calculates identifiers
         this.canDevice = new CAN(deviceID, 17, 10);
         this.canData = new CANData();
-        start();
     }
 
     /**
@@ -154,36 +153,6 @@ public class CoreDevice {
         T execute();
     }
 
-    protected long pollCanDeviceLong(int apiID) {
-        return attemptCanOperation(() -> {
-            if (canDevice.readPacketLatest(apiID, canData)) {
-                byte[] receivedData = canData.data;
-                if (canData.length >= 8) {
-                    return readCanPacketAsLong(receivedData);
-                } else {
-                    errorByteLengthDebug();
-                    return null;
-                }
-            }
-            return null;
-        }, apiID, -999L);
-    }
-
-    protected int pollCanDevice32BitSigned(int apiID, int offset) {
-        return attemptCanOperation(() -> {
-            if (canDevice.readPacketLatest(apiID, canData)) {
-                byte[] receivedData = canData.data;
-                if (canData.length >= offset + 4) {
-                    return readCanPacketAs32BitSigned(receivedData, offset);
-                } else {
-                    errorByteLengthDebug();
-                    return null;
-                }
-            }
-            return null;
-        }, apiID, -999);
-    }
-
     /**
      * Reads a 32-bit signed integer from a CAN packet at the specified offset.
      * This method assumes the data is in big-endian format.
@@ -202,92 +171,9 @@ public class CoreDevice {
         return value;
     }
 
-    /**
-     * Polls the CAN device for a single byte of data.
-     *
-     * @param apiID The API ID for the data to read.
-     * @return The byte value read from the CAN device, or -1 if no data received.
-     */
-    protected byte pollCanDeviceByte(int apiID) {
-        return attemptCanOperation(() -> {
-            if (canDevice.readPacketLatest(apiID, canData)) {
-                byte[] receivedData = canData.data;
-                if (canData.length >= 1) {
-                    return receivedData[0];
-                } else {
-                    errorByteLengthDebug();
-                    return null;
-                }
-            }
-            return null;
-        }, apiID, (byte) -1);
-    }
-
     //-------------------------------------------------------------------------------------------------------------------
-    // Command Sending Methods - FIXED
+    // Command Sending Methods 
     //-------------------------------------------------------------------------------------------------------------------
-    
-    /**
-     * Sends a simple command with no payload to the encoder.
-     * 
-     * @param apiID The API ID for the command
-     * @param commandName The name of the command for debug output
-     * @return True if the command was sent successfully, false otherwise
-     */
-    protected boolean sendSimpleCommand(int apiID, String commandName) {
-        byte[] commandData = new byte[1];
-        commandData[0] = 0x01; // Simple command trigger byte
-        
-        boolean success = attemptCanOperation(() -> {
-            int canId = getRxIdentifier(apiID);
-            canDevice.writePacket(commandData, canId);
-            if (debugMode) {
-                System.out.printf("Device %d: Sent %s command (CAN_ID=0x%X, API_ID=%d)%n", 
-                                deviceID, commandName, canId, apiID);
-            }
-            return true;
-        }, apiID, false);
-        
-        if (!success && debugMode) {
-            System.out.printf("Device %d: Failed to send %s command%n", deviceID, commandName);
-        }
-        
-        return success;
-    }
-    
-    /**
-     * Sends a command with a double value (position) to the encoder.
-     * 
-     * @param apiID The API ID for the command
-     * @param value The double value to send
-     * @param commandName The name of the command for debug output
-     * @return True if the command was sent successfully, false otherwise
-     */
-    protected boolean sendDoubleCommand(int apiID, double value, String commandName) {
-        byte[] commandData = new byte[8];
-    
-        // Convert to double (8 bytes)
-        byte[] valueBytes = doubleToByteArray(value);
-        
-        // Pack the value into the command data
-        System.arraycopy(valueBytes, 0, commandData, 0, 8);
-
-        boolean success = attemptCanOperation(() -> {
-            int canId = getTxIdentifier(apiID);
-            canDevice.writePacket(commandData, canId);
-            if (debugMode) {
-                System.out.printf("Device %d: Sent %s command (CAN_ID=0x%X, API_ID=%d, Value=%.6f)%n", 
-                                deviceID, commandName, canId, apiID, value);
-            }
-            return true;
-        }, apiID, false);
-        
-        if (!success && debugMode) {
-            System.out.printf("Device %d: Failed to send %s command%n", deviceID, commandName);
-        }
-        
-        return success;
-    }
 
     /**
      * Sends a command with a timeout parameter.
@@ -299,33 +185,161 @@ public class CoreDevice {
      * @return True if the command was sent successfully, false otherwise
      */
     protected boolean sendDoubleWithTimeoutCommand(int apiID, double value, double timeout, String commandName) {
-        byte[] commandData = new byte[8];
-    
-        // Convert to float (4 bytes each) to match C code expectation
-        byte[] valueBytes = floatToByteArray((float)value);
-        byte[] timeoutBytes = floatToByteArray((float)timeout);
-        
-        // Pack both values into the command data
-        System.arraycopy(valueBytes, 0, commandData, 0, 4);
-        System.arraycopy(timeoutBytes, 0, commandData, 4, 4);
+        byte[] commandData = doubleToByteArray(value); // Use the full 8 bytes for the double value
 
-        boolean success = attemptCanOperation(() -> {
-            int canId = getTxIdentifier(apiID);
-            canDevice.writePacket(commandData, canId);
-            if (debugMode) {
-                System.out.printf("Device %d: Sent %s command (CAN_ID=0x%X, API_ID=%d, Value=%.6f, Timeout=%.3f)%n", 
-                                deviceID, commandName, canId, apiID, value, timeout);
+        long timeoutMs = (long) (timeout * 1000); // Convert timeout to milliseconds
+        long startTime = System.currentTimeMillis();
+
+        boolean success = false;
+
+        while (System.currentTimeMillis() - startTime < timeoutMs) {
+            success = attemptCanOperation(() -> {
+                int canId = getTxIdentifier(apiID);
+                canDevice.writePacket(commandData, canId);
+                if (debugMode) {
+                    System.out.printf("Device %d: Sent %s command (CAN_ID=0x%X, API_ID=%d, Value=%.6f)%n", 
+                                    deviceID, commandName, canId, apiID, value);
+                }
+                return true;
+            }, apiID, false);
+
+            if (success) {
+                break; // Exit the loop if the operation is successful
             }
-            return true;
-        }, apiID, false);
-        
-        if (!success && debugMode) {
-            System.out.printf("Device %d: Failed to send %s command%n", deviceID, commandName);
+
+            try {
+                Thread.sleep(10); // Small delay before retrying
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
         }
-        
+
+        if (!success && debugMode) {
+            System.out.printf("Device %d: Failed to send %s command after timeout%n", deviceID, commandName);
+        }
+
         return success;
     }
-    
+
+    /**
+     * Sends a command with a timeout parameter and a long value.
+     * 
+     * @param apiID The API ID for the command
+     * @param value The long value to send
+     * @param timeout The timeout value in seconds
+     * @param commandName The name of the command for debug output
+     * @return True if the command was sent successfully, false otherwise
+     */
+    protected boolean sendLongWithTimeoutCommand(int apiID, long value, double timeout, String commandName) {
+        byte[] commandData = longToByteArray(value); // Convert long to 8-byte array
+
+        long timeoutMs = (long) (timeout * 1000); // Convert timeout to milliseconds
+        long startTime = System.currentTimeMillis();
+
+        boolean success = false;
+
+        while (System.currentTimeMillis() - startTime < timeoutMs) {
+            success = attemptCanOperation(() -> {
+                int canId = getTxIdentifier(apiID);
+                canDevice.writePacket(commandData, canId);
+                if (debugMode) {
+                    System.out.printf("Device %d: Sent %s command (CAN_ID=0x%X, API_ID=%d, Value=%d)%n", 
+                                    deviceID, commandName, canId, apiID, value);
+                }
+                return true;
+            }, apiID, false);
+
+            if (success) {
+                break; // Exit the loop if the operation is successful
+            }
+
+            try {
+                Thread.sleep(10); // Small delay before retrying
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+
+        if (!success && debugMode) {
+            System.out.printf("Device %d: Failed to send %s command after timeout%n", deviceID, commandName);
+        }
+
+        return success;
+    }
+
+    /**
+     * Converts a long value to an 8-byte array (big-endian format).
+     * 
+     * @param value The long value to convert
+     * @return An 8-byte array representing the long value
+     */
+    private byte[] longToByteArray(long value) {
+        byte[] result = new byte[8];
+        
+        // Convert to big-endian byte order
+        result[0] = (byte) ((value >> 56) & 0xFF);
+        result[1] = (byte) ((value >> 48) & 0xFF);
+        result[2] = (byte) ((value >> 40) & 0xFF);
+        result[3] = (byte) ((value >> 32) & 0xFF);
+        result[4] = (byte) ((value >> 24) & 0xFF);
+        result[5] = (byte) ((value >> 16) & 0xFF);
+        result[6] = (byte) ((value >> 8) & 0xFF);
+        result[7] = (byte) (value & 0xFF);
+        
+        return result;
+    }
+
+    /**
+     * Sends a command with a timeout parameter and a boolean value.
+     * 
+     * @param apiID The API ID for the command
+     * @param value The boolean value to send (true = 1, false = 0)
+     * @param timeout The timeout value in seconds
+     * @param commandName The name of the command for debug output
+     * @return True if the command was sent successfully, false otherwise
+     */
+    protected boolean sendBooleanWithTimeoutCommand(int apiID, boolean value, double timeout, String commandName) {
+        byte[] commandData = new byte[8];
+
+        // Convert boolean to byte (1 for true, 0 for false)
+        commandData[0] = (byte) (value ? 1 : 0);
+
+        long timeoutMs = (long) (timeout * 1000); // Convert timeout to milliseconds
+        long startTime = System.currentTimeMillis();
+
+        boolean success = false;
+
+        while (System.currentTimeMillis() - startTime < timeoutMs) {
+            success = attemptCanOperation(() -> {
+                int canId = getTxIdentifier(apiID);
+                canDevice.writePacket(commandData, canId);
+                if (debugMode) {
+                    System.out.printf("Device %d: Sent %s command (CAN_ID=0x%X, API_ID=%d, Value=%d)%n", 
+                                    deviceID, commandName, canId, apiID, commandData[0]);
+                }
+                return true;
+            }, apiID, false);
+
+            if (success) {
+                break; // Exit the loop if the operation is successful
+            }
+
+            try {
+                Thread.sleep(10); // Small delay before retrying
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+
+        if (!success && debugMode) {
+            System.out.printf("Device %d: Failed to send %s command after timeout%n", deviceID, commandName);
+        }
+
+        return success;
+    }
     /**
      * Waits for a command acknowledgment from the encoder.
      * Note: The C code doesn't appear to send acknowledgments, so this may always timeout

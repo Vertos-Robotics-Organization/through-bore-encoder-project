@@ -1,5 +1,6 @@
 "./Core/Src/MT6835.o"
 "./Core/Src/error_blink.o"
+"./Core/Src/flash_config.o"
 "./Core/Src/flex_encoder.o"
 "./Core/Src/main.o"
 "./Core/Src/mlx90393.o"

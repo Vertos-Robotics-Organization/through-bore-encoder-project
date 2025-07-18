@@ -20,28 +20,6 @@ public class CANSense extends CoreDevice implements Sendable, AutoCloseable {
     private double velocityRPS;          // Calculated from velocityCPS
     private double accelerationRPS2;     // Calculated from accelerationCPS2
     
-    // Fault status variables (kept for backward compatibility)
-    private boolean isStickyFault_Hardware = false; 
-    private boolean isStickyFault_BootDuringEnable = false;
-    private boolean isStickyFault_LoopOverrun = false;
-    private boolean isStickyFault_BadMagnet = false;
-    private boolean isStickyFault_CANGeneral = false;
-    private boolean isStickyFault_MomentaryCanBusLoss = false; 
-    private boolean isStickyFault_CANClogged = false;
-    private boolean isStickyFault_RotationOverspeed = false;
-    private boolean isStickyFault_UnderVolted = false;
-
-    // Non-sticky fault status variables
-    private boolean isFault_Hardware = false; 
-    private boolean isFault_BootDuringEnable = false;
-    private boolean isFault_LoopOverrun = false;
-    private boolean isFault_BadMagnet = false;
-    private boolean isFault_CANGeneral = false;
-    private boolean isFault_MomentaryCanBusLoss = false; 
-    private boolean isFault_CANClogged = false;
-    private boolean isFault_RotationOverspeed = false;
-    private boolean isFault_UnderVolted = false;
-
     // Constants for the encoder
     private final double CountsPerRevolution = 2097152.0; // 2 ^ 21
     
@@ -51,15 +29,17 @@ public class CANSense extends CoreDevice implements Sendable, AutoCloseable {
 
     // Command API IDs - CORRECTED to match the C code exactly
     private static final int ZERO_ENCODER_API_ID = 10;        // API ID for zero encoder command
-    private static final int SET_DIRECTION_CLOCKWISE_API_ID = 11;    // API ID for set direction clockwise
-    private static final int SET_DIRECTION_COUNTER_CLOCKWISE_API_ID = 12; // API ID for set direction counter-clockwise
-    private static final int SET_POSITION_API_ID = 13;        // API ID for set position command
-    private static final int RESET_FACTORY_API_ID = 14;      // API ID for factory reset command (if implemented in C)
+    private static final int SET_DIRECTION_API_ID = 11;    // API ID for set direction clockwise
+    private static final int SET_POSITION_API_ID = 12;        // API ID for set position command
+    private static final int RESET_FACTORY_API_ID = 13;      // API ID for factory reset command (if implemented in C)
 
     // Command execution state tracking
     private boolean isCommandInProgress = false;
     private long lastCommandTime = 0;
     private static final long COMMAND_TIMEOUT_MS = 5000; // 5 second timeout for commands
+
+
+    public final CoreDeviceFaultLayer FAULT;
 
     /**
      * Constructor for CANSense.
@@ -71,9 +51,10 @@ public class CANSense extends CoreDevice implements Sendable, AutoCloseable {
         super(deviceID, debugMode);
         this.deviceID = deviceID;
         this.debugMode = debugMode;
+        FAULT = new CoreDeviceFaultLayer();
         addListener(positionListener, POSITION_API_ID);
         addListener(velocityAccelListener, VELOCITY_ACCEL_API_ID);
-        addListener(faultListener, BOOLEAN_STATUS_API_ID);  // Changed from FAULT_API_ID to BOOLEAN_STATUS_API_ID
+        addListener(FAULT.getFaultListener(), BOOLEAN_STATUS_API_ID);
     }
 
     /**
@@ -219,252 +200,7 @@ public class CANSense extends CoreDevice implements Sendable, AutoCloseable {
         return velocityRPS * 60.0;
     }
 
-    //----------------------------------------------------------------------------------------
-    // Fault Status Methods
-    //----------------------------------------------------------------------------------------
-    /**
-     * Retrieves the sticky hardware fault status.
-     * (Updated to use boolean status data)
-     *
-     * @return True if a sticky hardware fault has been detected, false otherwise.
-     */
-    public boolean getStickyFault_Hardware() {
-        return isStickyFault_Hardware;
-    }
 
-    /**
-     * Resets the sticky hardware fault status.
-     */
-    public void resetStickyFault_Hardware() {
-        isStickyFault_Hardware = false;
-    }
-
-    /**
-     * Retrieves the sticky boot during enable fault status.
-     *
-     * @return True if a sticky boot during enable fault has been detected, false otherwise.
-     */
-    public boolean getStickyFault_BootDuringEnable() {
-        return isStickyFault_BootDuringEnable;
-    }
-
-    /**
-     * Resets the sticky boot during enable fault status.
-     */
-    public void resetStickyFault_BootDuringEnable() {
-        isStickyFault_BootDuringEnable = false;
-    }
-
-    /**
-     * Retrieves the sticky magnet fault status.
-     *
-     * @return True if a sticky magnet fault has been detected, false otherwise.
-     */
-    public boolean getStickyFault_BadMagnet() {
-        return isStickyFault_BadMagnet;
-    }
-
-    /**
-     * Resets the sticky magnet fault status.
-     */
-    public void resetStickyFault_BadMagnet() {
-        isStickyFault_BadMagnet = false;
-    }
-
-    /**
-     * Retrieves the sticky general CAN fault status.
-     * (Updated to use boolean status data)
-     *
-     * @return True if a sticky general CAN fault has been detected, false otherwise.
-     */
-    public boolean getStickyFault_CANGeneral() {
-        return isStickyFault_CANGeneral;
-    }
-
-    /**
-     * Resets the sticky general CAN fault status.
-     */
-    public void resetStickyFault_CANGeneral() {
-        isStickyFault_CANGeneral = false;
-    }
-
-    /**
-     * Retrieves the sticky loop overrun fault status.
-     *
-     * @return True if a sticky loop overrun fault has been detected, false otherwise.
-     */
-    public boolean getStickyFault_LoopOverrun() {
-        return isStickyFault_LoopOverrun;
-    }
-
-    /**
-     * Resets the sticky loop overrun fault status.
-     */
-    public void resetStickyFault_LoopOverrun() {
-        isStickyFault_LoopOverrun = false;
-    }
-
-    /**
-     * Retrieves the sticky momentary CAN bus loss fault status.
-     *
-     * @return True if a sticky momentary CAN bus loss fault has been detected, false otherwise.
-     */
-    public boolean getStickyFault_MomentaryCanBusLoss() {
-        return isStickyFault_MomentaryCanBusLoss;
-    }
-
-    /**
-     * Resets the sticky momentary CAN bus loss fault status.
-     */
-    public void resetStickyFault_MomentaryCanBusLoss() {
-        isStickyFault_MomentaryCanBusLoss = false;
-    }
-
-    /**
-     * Retrieves the sticky CAN clogged fault status.
-     *
-     * @return True if a sticky CAN clogged fault has been detected, false otherwise.
-     */
-    public boolean getStickyFault_CANClogged() {
-        return isStickyFault_CANClogged;
-    }
-
-    /**
-     * Resets the sticky CAN clogged fault status.
-     */
-    public void resetStickyFault_CANClogged() {
-        isStickyFault_CANClogged = false;
-    }
-
-    /**
-     * Retrieves the sticky rotation overspeed fault status.
-     *
-     * @return True if a sticky rotation overspeed fault has been detected, false otherwise.
-     */
-    public boolean getStickyFault_RotationOverspeed() {
-        return isStickyFault_RotationOverspeed;
-    }
-
-    /**
-     * Resets the sticky rotation overspeed fault status.
-     */
-    public void resetStickyFault_RotationOverspeed() {
-        isStickyFault_RotationOverspeed = false;
-    }
-
-    /**
-     * Retrieves the sticky under-volted fault status.
-     *
-     * @return True if a sticky under-volted fault has been detected, false otherwise.
-     */
-    public boolean getStickyFault_UnderVolted() {
-        return isStickyFault_UnderVolted;
-    }
-
-    /**
-     * Resets the sticky under-volted fault status.
-     */
-    public void resetStickyFault_UnderVolted() {
-        isStickyFault_UnderVolted = false;
-    }
-
-    /**
-     * Retrieves the hardware fault status.
-     *
-     * @return True if a hardware fault has been detected, false otherwise.
-     */
-    public boolean getFault_Hardware() {
-        return isFault_Hardware;
-    }
-
-    /**
-     * Retrieves the boot during enable fault status.
-     *
-     * @return True if a boot during enable fault has been detected, false otherwise.
-     */
-    public boolean getFault_BootDuringEnable() {
-        return isFault_BootDuringEnable;
-    }
-
-    /**
-     * Retrieves the loop overrun fault status.
-     *
-     * @return True if a loop overrun fault has been detected, false otherwise.
-     */
-    public boolean getFault_LoopOverrun() {
-        return isFault_LoopOverrun;
-    }
-
-    /**
-     * Retrieves the bad magnet fault status.
-     *
-     * @return True if a bad magnet fault has been detected, false otherwise.
-     */
-    public boolean getFault_BadMagnet() {
-        return isFault_BadMagnet;
-    }
-
-    /**
-     * Retrieves the general CAN fault status.
-     *
-     * @return True if a general CAN fault has been detected, false otherwise.
-     */
-    public boolean getFault_CANGeneral() {
-        return isFault_CANGeneral;
-    }
-
-    /**
-     * Retrieves the momentary CAN bus loss fault status.
-     *
-     * @return True if a momentary CAN bus loss fault has been detected, false otherwise.
-     */
-    public boolean getFault_MomentaryCanBusLoss() {
-        return isFault_MomentaryCanBusLoss;
-    }
-
-    /**
-     * Retrieves the CAN clogged fault status.
-     *
-     * @return True if a CAN clogged fault has been detected, false otherwise.
-     */
-    public boolean getFault_CANClogged() {
-        return isFault_CANClogged;
-    }
-
-    /**
-     * Retrieves the rotation overspeed fault status.
-     *
-     * @return True if a rotation overspeed fault has been detected, false otherwise.
-     */
-    public boolean getFault_RotationOverspeed() {
-        return isFault_RotationOverspeed;
-    }
-
-    /**
-     * Retrieves the under-volted fault status.
-     *
-     * @return True if an under-volted fault has been detected, false otherwise.
-     */
-    public boolean getFault_UnderVolted() {
-        return isFault_UnderVolted;
-    }
-
-    /**
-     * Resets all sticky fault flags to false.
-     * This method allows the user to clear all sticky fault statuses.
-     */
-    public void resetStickyFaults() {
-        // Clear local fault states
-        isStickyFault_Hardware = false;
-        isStickyFault_CANGeneral = false;
-        isStickyFault_LoopOverrun = false;
-        isStickyFault_MomentaryCanBusLoss = false;
-        isStickyFault_BootDuringEnable = false;
-        isStickyFault_BadMagnet = false;
-        isStickyFault_CANClogged = false;
-        isStickyFault_RotationOverspeed = false;
-        isStickyFault_UnderVolted = false;
-    }
 
     //-------------------------------------------------------------------------------------------
     // Senders - FIXED IMPLEMENTATIONS WITH PROPER CAN COMMUNICATION
@@ -486,7 +222,7 @@ public class CANSense extends CoreDevice implements Sendable, AutoCloseable {
         isCommandInProgress = true;
         lastCommandTime = System.currentTimeMillis();
 
-        boolean success = sendSimpleCommand(ZERO_ENCODER_API_ID, "Zero Encoder");
+        boolean success = sendDoubleWithTimeoutCommand(ZERO_ENCODER_API_ID, 0.0, COMMAND_TIMEOUT_MS, "Zero Encoder");
         
         if (success) {
             if (debugMode) {
@@ -525,7 +261,9 @@ public class CANSense extends CoreDevice implements Sendable, AutoCloseable {
         isCommandInProgress = true;
         lastCommandTime = System.currentTimeMillis();
 
-        boolean success = sendSimpleCommand(SET_DIRECTION_COUNTER_CLOCKWISE_API_ID, "Set Direction Counter-Clockwise");
+        // counter-clockwise is true
+        // clockwise is false
+        boolean success = sendBooleanWithTimeoutCommand(SET_DIRECTION_API_ID, true, COMMAND_TIMEOUT_MS, "Set Direction Counter-Clockwise");
         
         if (success) {
             if (debugMode) {
@@ -563,7 +301,7 @@ public class CANSense extends CoreDevice implements Sendable, AutoCloseable {
         isCommandInProgress = true;
         lastCommandTime = System.currentTimeMillis();
 
-        boolean success = sendSimpleCommand(SET_DIRECTION_CLOCKWISE_API_ID, "Set Direction Clockwise");
+        boolean success = sendBooleanWithTimeoutCommand(SET_DIRECTION_API_ID, false, COMMAND_TIMEOUT_MS, "Set Direction Clockwise");
         
         if (success) {
             if (debugMode) {
@@ -654,7 +392,7 @@ public class CANSense extends CoreDevice implements Sendable, AutoCloseable {
         isCommandInProgress = true;
         lastCommandTime = System.currentTimeMillis();
 
-        boolean success = sendSimpleCommand(RESET_FACTORY_API_ID, "Reset Factory Defaults");
+        boolean success = sendBooleanWithTimeoutCommand(RESET_FACTORY_API_ID, true, COMMAND_TIMEOUT_MS, "Factory Reset");
         
         if (success) {
             if (debugMode) {
@@ -668,13 +406,7 @@ public class CANSense extends CoreDevice implements Sendable, AutoCloseable {
                 Thread.currentThread().interrupt();
             }
             
-            // Clear local fault states after factory reset
-            isStickyFault_Hardware = false;
-            isStickyFault_CANGeneral = false;
-            isStickyFault_LoopOverrun = false;
-            isStickyFault_MomentaryCanBusLoss = false;
-            isStickyFault_BootDuringEnable = false;
-            isStickyFault_BadMagnet = false;
+            FAULT.resetStickyFaults();
             
             isCommandInProgress = false;
             return true;
@@ -753,40 +485,6 @@ public class CANSense extends CoreDevice implements Sendable, AutoCloseable {
         }
     };
 
-    private boolean previousCANFault = false;
 
-    private final CoreDeviceListener faultListener = new CoreDeviceListener() {
-        @Override
-        public void onDataReceived(byte[] data) {
-            synchronized (this) {
-                byte booleanStatusByte = data[0];
-                isFault_Hardware              = (booleanStatusByte & 0x01) != 0;  // Bit 0
-                isFault_LoopOverrun           = (booleanStatusByte & 0x02) != 0;  // Bit 1
-                isFault_CANGeneral            = (booleanStatusByte & 0x04) != 0;  // Bit 2: isCANInvalid
-                isFault_BootDuringEnable      = (booleanStatusByte & 0x08) != 0;  // Bit 3: isResetDuringEnable
-                isFault_BadMagnet             = (booleanStatusByte & 0x10) != 0;  // Bit 4: isMagnetWeakSignal
-                isFault_RotationOverspeed     = (booleanStatusByte & 0x20) != 0;  // Bit 5
-                isFault_CANClogged            = (booleanStatusByte & 0x40) != 0;  // Bit 6
-                isFault_UnderVolted           = (booleanStatusByte & 0x80) != 0;  // Bit 7
-
-                isStickyFault_BootDuringEnable      |= isFault_BootDuringEnable;
-                isStickyFault_Hardware              |= isFault_Hardware;
-                isStickyFault_LoopOverrun           |= isFault_LoopOverrun;
-                isStickyFault_CANGeneral            |= isFault_CANGeneral;
-                isStickyFault_BadMagnet             |= isFault_BadMagnet;
-                isStickyFault_RotationOverspeed     |= isFault_RotationOverspeed;
-                isStickyFault_CANClogged            |= isFault_CANClogged;
-                isStickyFault_UnderVolted           |= isFault_UnderVolted;
-
-                boolean currentCANFault = isFault_CANClogged || isFault_CANGeneral;
-
-                if (previousCANFault && !currentCANFault) {
-                    isStickyFault_MomentaryCanBusLoss = true;
-                }
-
-                previousCANFault = currentCANFault;
-            }
-        }
-    };
 }
 
