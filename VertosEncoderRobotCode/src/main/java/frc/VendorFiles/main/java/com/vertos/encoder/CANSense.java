@@ -28,10 +28,15 @@ public class CANSense extends CoreDevice implements Sendable, AutoCloseable {
     private static final int BOOLEAN_STATUS_API_ID = 2;    // API ID for boolean status messages (1 byte)
 
     // Command API IDs - CORRECTED to match the C code exactly
-    private static final int ZERO_ENCODER_API_ID = 10;        // API ID for zero encoder command
-    private static final int SET_DIRECTION_API_ID = 11;    // API ID for set direction clockwise
-    private static final int SET_POSITION_API_ID = 12;        // API ID for set position command
-    private static final int RESET_FACTORY_API_ID = 13;      // API ID for factory reset command (if implemented in C)
+    private static final int SET_DEVICE_ID_API_ID = 0x00;      // Set device ID
+    private static final int ZERO_ENCODER_API_ID = 0x01;       // Reset encoder position
+    private static final int SET_DIRECTION_API_ID = 0x02;      // Set encoder direction  
+    private static final int SET_POSITION_API_ID = 0x03;       // Set absolute position
+    private static final int RESET_FACTORY_API_ID = 0x04;      // Factory reset
+    private static final int QUERY_DEVICE_INFO_API_ID = 0x05;  // Query device info
+    private static final int SET_VELOCITY_ALPHA_API_ID = 0x10; // Set velocity filter
+    private static final int SET_ACCEL_ALPHA_API_ID = 0x11;    // Set acceleration filter
+    private static final int CLEAR_FAULTS_API_ID = 0x20;   
 
     // Command execution state tracking
     private boolean isCommandInProgress = false;
@@ -372,45 +377,26 @@ public class CANSense extends CoreDevice implements Sendable, AutoCloseable {
     }
 
     /**
-     * Resets the encoder to factory default settings.
-     * This will clear all user configurations and return the encoder to its initial state.
-     * 
-     * @return True if the command was sent successfully, false otherwise.
+     * Send factory reset command with required confirmation byte
      */
-    public boolean resetFactoryDefaults() {
-        if (!waitForReady(1000)) {
-            if (debugMode) {
-                System.out.printf("Device %d: Encoder not ready for factory reset command%n", deviceID);
-            }
-            return false;
-        }
-
-        isCommandInProgress = true;
-        lastCommandTime = System.currentTimeMillis();
-
-        boolean success = sendBooleanWithTimeoutCommand(RESET_FACTORY_API_ID, true, COMMAND_TIMEOUT_MS, "Factory Reset");
+    public boolean sendFactoryReset(double timeout) {
+        byte[] commandData = new byte[1];
+        commandData[0] = (byte) 0xAA; // Required confirmation byte
         
-        if (success) {
-            if (debugMode) {
-                System.out.printf("Device %d: Factory reset command sent successfully%n", deviceID);
-            }
-            
-            // Factory reset may take longer
-            try {
-                Thread.sleep(1000);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-            
-            FAULT.resetStickyFaults();
-            
-            isCommandInProgress = false;
-            return true;
-        }
-
-        isCommandInProgress = false;
-        return success;
+        return sendCommandWithRetry(RESET_FACTORY_API_ID, commandData, timeout, "Factory Reset");
     }
+
+    /**
+     * Send clear faults command with required confirmation byte  
+     */
+    public boolean sendClearFaults(double timeout) {
+        byte[] commandData = new byte[1];
+        commandData[0] = (byte) 0x55; // Required confirmation byte
+        
+        return sendCommandWithRetry(CLEAR_FAULTS_API_ID, commandData, timeout, "Clear Faults");
+    }
+
+
 
     /**
      * Checks if a command is currently in progress.

@@ -72,14 +72,6 @@ public class CoreDevice {
     }
 
     /**
-     * Calculate the correct CAN identifier for sending commands
-     * This should match what the C code expects to receive
-     */
-    private int getTxIdentifier(int apiId) {
-        return (BASE_ID + deviceID) | (apiId << 6);
-    }
-
-    /**
      * Periodic method to read data from the CAN device.
      * This method checks for new CAN packets and notifies listeners.
      */
@@ -341,16 +333,53 @@ public class CoreDevice {
         return false;
     }
 
+    /**
+     * Generic command sending with retry logic
+     */
+    protected boolean sendCommandWithRetry(int apiID, byte[] data, double timeout, String commandName) {
+        long timeoutMs = (long) (timeout * 1000);
+        long startTime = System.currentTimeMillis();
+
+        boolean success = false;
+
+        while (System.currentTimeMillis() - startTime < timeoutMs) {
+            success = sendPacket(apiID, data);
+            if (success) {
+                break;
+            }
+            try {
+                Thread.sleep(10);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+
+        if (!success && debugMode) {
+            System.out.printf("Device %d: Failed to send %s command after timeout%n", deviceID, commandName);
+        }
+
+        return success;
+    }
+
     //-------------------------------------------------------------------------------------------------------------------
     // Helpers
     //-------------------------------------------------------------------------------------------------------------------
+    private int getTxIdentifier(int apiId) {
+        int manufacturer = 17;    // 5 bits - 17
+        int deviceType = 10;          // 8 bits - 10  
+        int reserved = 0x0;                    // 6 bits - reserved
+        
+        return (manufacturer << 24) | (deviceType << 16) | (apiId << 10) | (deviceID << 6) | reserved;
+    }
+    
     /**
      * Sends a CAN packet to the device.
      *
      * @param apiID The API ID for the packet.
      * @param data  The payload to send.
      */
-    public boolean sendPacket(int apiID, byte[] data) {
+    protected boolean sendPacket(int apiID, byte[] data) {
         int canId = apiID;
         return attemptCanOperation(() -> {
             canDevice.writePacket(data, canId);
