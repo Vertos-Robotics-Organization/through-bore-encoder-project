@@ -24,8 +24,8 @@ public class CANSense extends CoreDevice implements Sendable, AutoCloseable {
     private final double CountsPerRevolution = 2097152.0; // 2 ^ 21
     
     private static final int POSITION_API_ID = 0;          // API ID for position data (8 bytes - 64-bit counts)
-    private static final int VELOCITY_ACCEL_API_ID = 16;    // API ID for combined velocity and acceleration data (8 bytes)
-    private static final int BOOLEAN_STATUS_API_ID = 32;    // API ID for boolean status messages (1 byte)
+    private static final int VELOCITY_ACCEL_API_ID = 1;    // API ID for combined velocity and acceleration data (8 bytes)
+    private static final int BOOLEAN_STATUS_API_ID = 2;    // API ID for boolean status messages (1 byte)
 
     // Command API IDs - CORRECTED to match the C code exactly
     private static final int ZERO_ENCODER_API_ID = 10;        // API ID for zero encoder command
@@ -132,10 +132,6 @@ public class CANSense extends CoreDevice implements Sendable, AutoCloseable {
     public double getSensorAccelerationRPS2() {
         return accelerationRPS2;
     }
-
-    //----------------------------------------------------------------------------------------
-    // Additional conversion methods (NEW)
-    //----------------------------------------------------------------------------------------
     
     /**
      * Returns the absolute position in degrees.
@@ -350,9 +346,9 @@ public class CANSense extends CoreDevice implements Sendable, AutoCloseable {
         isCommandInProgress = true;
         lastCommandTime = System.currentTimeMillis();
 
-        position = position * CountsPerRevolution;
+        long castedPosition = (long) (position * CountsPerRevolution);
 
-        boolean success = sendDoubleWithTimeoutCommand(SET_POSITION_API_ID, position, timeout, "Set Position");
+        boolean success = sendLongWithTimeoutCommand(SET_POSITION_API_ID, castedPosition, timeout, "Set Position");
         
         if (success) {
             if (debugMode) {

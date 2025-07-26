@@ -14,6 +14,7 @@
 "./Core/Src/sysmem.o"
 "./Core/Src/system_stm32g0xx.o"
 "./Core/Src/userflash.o"
+"./Core/Src/vertos_calculations.o"
 "./Core/Src/vl53l0x_api.o"
 "./Core/Src/vl53l0x_api_calibration.o"
 "./Core/Src/vl53l0x_api_core.o"

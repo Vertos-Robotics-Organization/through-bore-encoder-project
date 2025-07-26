@@ -1,0 +1,11 @@
+../Core/Src/vertos_calculations.c:39:6:vertos_calculations_init	1
+../Core/Src/vertos_calculations.c:47:6:vertos_calculations_reset	1
+../Core/Src/vertos_calculations.c:64:5:vertos_calculations_update	3
+../Core/Src/vertos_calculations.c:118:7:vertos_calculations_get_velocity_cps	1
+../Core/Src/vertos_calculations.c:126:7:vertos_calculations_get_acceleration_cps2	1
+../Core/Src/vertos_calculations.c:134:9:vertos_calculations_get_velocity_scaled	1
+../Core/Src/vertos_calculations.c:142:9:vertos_calculations_get_acceleration_scaled	1
+../Core/Src/vertos_calculations.c:152:5:vertos_calculations_set_filter_coefficients	7
+../Core/Src/vertos_calculations.c:174:7:vertos_calculations_get_velocity_alpha	1
+../Core/Src/vertos_calculations.c:182:7:vertos_calculations_get_acceleration_alpha	1
+../Core/Src/vertos_calculations.c:190:5:vertos_calculations_is_ready	1

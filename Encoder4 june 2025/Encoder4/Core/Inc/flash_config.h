@@ -1,15 +1,16 @@
 /**
  ******************************************************************************
  * @file           : flash_config.h
- * @brief          : Flash configuration management for STM32G0B1CC encoder
+ * @brief          : Flash configuration management for STM32G0B1CC encoder (512KB)
  ******************************************************************************
  * @attention
  *
- * Flash Memory Organization for STM32G0B1CC (256KB total):
- * - Application Code: 0x08000000 - 0x0803AFFF (~236KB)
- * - User Config:      0x0803B000 - 0x0803CFFF (8KB, Pages 0x76-0x79)
- * - Critical Data:    0x0803D000 - 0x0803EFFF (8KB, Pages 0x7A-0x7D)
- * - Reserved:         0x0803F000 - 0x0803FFFF (4KB, Pages 0x7E-0x7F)
+ * Flash Memory Organization for STM32G0B1CC (512KB total):
+ * - Application Code: 0x08000000 - 0x0806FFFF (~448KB)
+ * - User Config:      0x08070000 - 0x08077FFF (32KB, Pages 0xE0-0xFF)
+ * - Critical Data:    0x08078000 - 0x0807BFFF (16KB, Pages 0x3C-0x3F)
+ * - Array Storage:    0x0807C000 - 0x0807EFFF (12KB, Pages 0x3E-0x3F)
+ * - Reserved:         0x0807F000 - 0x0807FFFF (4KB, Page 0x3F)
  *
  ******************************************************************************
  */
@@ -21,30 +22,75 @@
 #include <stdint.h>
 
 //===================================================================================
-// FLASH MEMORY MAP - STM32G0B1CC SPECIFIC
+// FLASH MEMORY MAP - STM32G0B1CC 512KB SPECIFIC
 //===================================================================================
 
-// STM32G0B1CC Flash specifications (from datasheet)
+// STM32G0B1CC Flash specifications (512KB variant)
 #define FLASH_BASE_ADDR         0x08000000
-#define FLASH_SIZE_BYTES        (256 * 1024)    // 256KB for "CC" variant
-#define FLASH_PAGE_SIZE         2048             // 2KB per page (datasheet confirmed)
-#define FLASH_TOTAL_PAGES       128              // 256KB / 2KB = 128 pages (0x00-0x7F)
+#define FLASH_SIZE_BYTES        (512 * 1024)    // 512KB for upgraded variant
+#define FLASH_PAGE_SIZE         2048             // 2KB per page
+#define FLASH_TOTAL_PAGES       256              // 512KB / 2KB = 256 pages (0x00-0xFF)
 
-// Memory allocation (using last 20KB for configuration data)
-#define USER_CONFIG_START       0x0803B000       // Page 0x76 (8KB for user settings)
-#define USER_CONFIG_SIZE        (4 * FLASH_PAGE_SIZE)  // 8KB
-#define CRITICAL_DATA_START     0x0803D000       // Page 0x7A (8KB for critical data)
-#define CRITICAL_DATA_SIZE      (4 * FLASH_PAGE_SIZE)  // 8KB
-#define RESERVED_START          0x0803F000       // Page 0x7E (4KB reserved)
+// Memory allocation (using last 64KB for configuration data)
+#define USER_CONFIG_START       0x08070000       // Page 0xE0 (32KB for user settings)
+#define USER_CONFIG_SIZE        (16 * FLASH_PAGE_SIZE)  // 32KB
+#define CRITICAL_DATA_START     0x08078000       // Page 0x3C (16KB for critical data)
+#define CRITICAL_DATA_SIZE      (8 * FLASH_PAGE_SIZE)   // 16KB
+#define ARRAY_STORAGE_START     0x0807C000       // Page 0x3E (12KB for array storage)
+#define ARRAY_STORAGE_SIZE      (6 * FLASH_PAGE_SIZE)   // 12KB
+#define RESERVED_START          0x0807F000       // Page 0x3F (4KB reserved)
+
+//===================================================================================
+// ARRAY STORAGE CONFIGURATION
+//===================================================================================
+
+// Maximum number of user-defined arrays
+#define MAX_USER_ARRAYS         32
+#define MAX_ARRAY_SIZE          512      // Maximum elements per array
+#define ARRAY_NAME_LENGTH       16       // Maximum array name length
+
+// Array data types
+typedef enum {
+    ARRAY_TYPE_UINT8 = 0,
+    ARRAY_TYPE_INT8,
+    ARRAY_TYPE_UINT16,
+    ARRAY_TYPE_INT16,
+    ARRAY_TYPE_UINT32,
+    ARRAY_TYPE_INT32,
+    ARRAY_TYPE_FLOAT,
+    ARRAY_TYPE_COUNT
+} array_data_type_t;
+
+// Array storage header for each array
+typedef struct {
+    char name[ARRAY_NAME_LENGTH];     // Array name
+    array_data_type_t data_type;      // Data type of elements
+    uint16_t element_count;           // Number of elements stored
+    uint16_t max_elements;            // Maximum elements allocated
+    uint32_t data_offset;             // Offset to data in array storage area
+    uint32_t checksum;                // CRC32 of array data
+    uint8_t active;                   // 1 if array is active, 0 if deleted
+    uint8_t reserved[7];              // Padding for alignment
+} __attribute__((packed)) array_descriptor_t;
+
+// Array storage management structure
+typedef struct {
+    uint32_t magic;                   // 0xARRAY01 - validation marker
+    uint32_t version;                 // Storage format version
+    uint32_t array_count;             // Number of active arrays
+    uint32_t next_free_offset;        // Next free data offset
+    array_descriptor_t arrays[MAX_USER_ARRAYS];  // Array descriptors
+    uint8_t reserved[3968];           // Pad to fill page boundary
+    uint32_t checksum;                // CRC32 of management structure
+} __attribute__((packed)) array_storage_header_t;
 
 //===================================================================================
 // DATA STRUCTURES
 //===================================================================================
 
 /**
- * @brief User configuration structure (8KB allocated)
- * @note This structure contains user-modifiable settings that can be
- *       changed during operation via CAN commands or configuration tools
+ * @brief User configuration structure (32KB allocated)
+ * @note Expanded with more test arrays and configuration options
  */
 typedef struct {
     uint32_t magic;                    // 0xCAFEBABE - validation marker
@@ -88,18 +134,37 @@ typedef struct {
     uint32_t max_velocity_cps;        // Maximum velocity seen (counts/second)
     float    max_temperature_c;       // Maximum temperature recorded (Celsius)
 
-    // User-defined boolean flags (32 custom flags)
-    uint32_t user_flags;              // Bitfield for application-specific flags
+    // User-defined boolean flags (64 custom flags)
+    uint64_t user_flags;              // Bitfield for application-specific flags
+
+    // Expanded test arrays for diagnostics and development
+    uint32_t test_array_u32[64];      // 64 x 32-bit test values
+    uint16_t test_array_u16[128];     // 128 x 16-bit test values  
+    uint8_t  test_array_u8[256];      // 256 x 8-bit test values
+    float    test_array_float[64];    // 64 x float test values
+    int32_t  test_array_i32[64];      // 64 x signed 32-bit test values
+
+    // Advanced configuration
+    uint32_t advanced_config[128];    // 128 advanced configuration parameters
+    
+    // Calibration lookup tables
+    float    position_correction_table[360]; // Per-degree position correction
+    float    temperature_compensation[64];    // Temperature compensation curve
+    
+    // User-defined configuration blocks
+    uint32_t user_config_block1[256]; // General purpose config block 1
+    uint32_t user_config_block2[256]; // General purpose config block 2
+    uint32_t user_config_block3[256]; // General purpose config block 3
+    uint32_t user_config_block4[256]; // General purpose config block 4
 
     // Reserved for future expansion
-    uint8_t  reserved[7900];          // Pad to ~8KB
+    uint8_t  reserved[24576];         // Pad to ~32KB
     uint32_t checksum;                // CRC32 of entire structure
 } __attribute__((packed)) flash_user_config_t;
 
 /**
- * @brief Critical system data structure (8KB allocated)
- * @note This structure contains factory calibration data and system-critical
- *       information that should rarely change after manufacturing
+ * @brief Critical system data structure (16KB allocated)
+ * @note Expanded with more diagnostic and calibration data
  */
 typedef struct {
     uint32_t magic;                   // 0xDEADBEEF - validation marker
@@ -114,7 +179,7 @@ typedef struct {
     float    magnetic_offset_degrees; // Factory magnetic offset calibration
     float    temperature_coefficient; // Temperature compensation coefficient
     int32_t  encoder_cpr;             // Counts per revolution (factory setting)
-    float    linearity_correction[16]; // Linearity correction table
+    float    linearity_correction[64]; // Expanded linearity correction table
 
     // System Fault Tracking
     uint32_t reset_sticky_flag;       // Reset-during-enable detection flag
@@ -130,8 +195,28 @@ typedef struct {
     float    min_voltage_recorded;    // Minimum voltage seen
     float    max_voltage_recorded;    // Maximum voltage seen
 
+    // Extended diagnostics
+    uint32_t can_tx_count;            // Total CAN messages transmitted
+    uint32_t can_rx_count;            // Total CAN messages received
+    uint32_t spi_error_count;         // SPI communication errors
+    uint32_t i2c_error_count;         // I2C communication errors
+    
+    // Performance metrics
+    uint32_t max_loop_time_us;        // Maximum main loop execution time
+    uint32_t avg_loop_time_us;        // Average main loop execution time
+    uint32_t cpu_usage_percent;       // CPU usage percentage
+    
+    // Factory test results
+    float    factory_test_results[32]; // Factory test measurements
+    uint32_t factory_test_status;      // Pass/fail status of factory tests
+    
+    // Manufacturing data
+    char     manufacturing_date[16];   // Manufacturing date string
+    char     test_station_id[16];      // Test station identifier
+    uint32_t manufacturing_batch;      // Manufacturing batch number
+
     // Reserved for future critical data
-    uint8_t  reserved[7944];          // Pad to ~8KB
+    uint8_t  reserved[15872];         // Pad to ~16KB
     uint32_t checksum;                // CRC32 of entire structure
 } __attribute__((packed)) flash_critical_data_t;
 
@@ -142,197 +227,131 @@ typedef struct {
 /**
  * @brief Initialize flash configuration system
  * @return HAL_OK on success, HAL_ERROR on failure
- * @note Call this once during system initialization
  */
 HAL_StatusTypeDef flash_config_init(void);
 
 //--- Device Identity Functions ---
-/**
- * @brief Get device CAN ID from flash
- * @return Current device CAN ID (0-255)
- */
 uint32_t flash_get_device_id(void);
-
-/**
- * @brief Set device CAN ID and save to flash
- * @param id New device CAN ID (0-255)
- * @return HAL_OK on success, HAL_ERROR on failure
- */
 HAL_StatusTypeDef flash_set_device_id(uint32_t id);
-
-/**
- * @brief Get device name from flash
- * @param name Buffer to store device name (must be at least 32 bytes)
- * @return HAL_OK on success, HAL_ERROR on failure
- */
 HAL_StatusTypeDef flash_get_device_name(char* name);
-
-/**
- * @brief Set device name and save to flash
- * @param name New device name (max 31 characters + null terminator)
- * @return HAL_OK on success, HAL_ERROR on failure
- */
 HAL_StatusTypeDef flash_set_device_name(const char* name);
 
 //--- Encoder Configuration Functions ---
-/**
- * @brief Get encoder direction setting
- * @return 0 for clockwise, 1 for counter-clockwise
- */
 uint8_t flash_get_encoder_direction(void);
-
-/**
- * @brief Set encoder direction and save to flash
- * @param direction 0 for clockwise, 1 for counter-clockwise
- * @return HAL_OK on success, HAL_ERROR on failure
- */
 HAL_StatusTypeDef flash_set_encoder_direction(uint8_t direction);
-
-/**
- * @brief Get position offset from flash
- * @return Current position offset in counts
- */
 int64_t flash_get_position_offset(void);
-
-/**
- * @brief Set position offset and save to flash
- * @param offset New position offset in counts
- * @return HAL_OK on success, HAL_ERROR on failure
- */
 HAL_StatusTypeDef flash_set_position_offset(int64_t offset);
 
 //--- Filter Configuration Functions ---
-/**
- * @brief Get velocity filter alpha coefficient
- * @return Current velocity filter alpha (0.0-1.0)
- */
 float flash_get_velocity_alpha(void);
-
-/**
- * @brief Set velocity filter alpha and save to flash
- * @param alpha New alpha coefficient (0.0-1.0)
- * @return HAL_OK on success, HAL_ERROR on failure
- */
 HAL_StatusTypeDef flash_set_velocity_alpha(float alpha);
-
-/**
- * @brief Get acceleration filter alpha coefficient
- * @return Current acceleration filter alpha (0.0-1.0)
- */
 float flash_get_accel_alpha(void);
-
-/**
- * @brief Set acceleration filter alpha and save to flash
- * @param alpha New alpha coefficient (0.0-1.0)
- * @return HAL_OK on success, HAL_ERROR on failure
- */
 HAL_StatusTypeDef flash_set_accel_alpha(float alpha);
 
+//--- Test Array Functions (Enhanced) ---
+HAL_StatusTypeDef flash_set_test_array_u32_value(uint8_t index, uint32_t value);
+uint32_t flash_get_test_array_u32_value(uint8_t index);
+HAL_StatusTypeDef flash_set_test_array_u16_value(uint8_t index, uint16_t value);
+uint16_t flash_get_test_array_u16_value(uint8_t index);
+HAL_StatusTypeDef flash_set_test_array_u8_value(uint8_t index, uint8_t value);
+uint8_t flash_get_test_array_u8_value(uint8_t index);
+HAL_StatusTypeDef flash_set_test_array_float_value(uint8_t index, float value);
+float flash_get_test_array_float_value(uint8_t index);
+HAL_StatusTypeDef flash_set_test_array_i32_value(uint8_t index, int32_t value);
+int32_t flash_get_test_array_i32_value(uint8_t index);
+
+//--- Dynamic Array Functions (New) ---
+/**
+ * @brief Create a new user array
+ * @param name Array name (max 15 characters)
+ * @param data_type Type of data to store
+ * @param max_elements Maximum number of elements
+ * @return Array ID (0-31) on success, -1 on failure
+ */
+int8_t flash_create_user_array(const char* name, array_data_type_t data_type, uint16_t max_elements);
+
+/**
+ * @brief Delete a user array
+ * @param array_id Array ID to delete
+ * @return HAL_OK on success, HAL_ERROR on failure
+ */
+HAL_StatusTypeDef flash_delete_user_array(uint8_t array_id);
+
+/**
+ * @brief Write data to user array
+ * @param array_id Array ID
+ * @param index Element index
+ * @param data Pointer to data
+ * @param count Number of elements to write
+ * @return HAL_OK on success, HAL_ERROR on failure
+ */
+HAL_StatusTypeDef flash_write_user_array(uint8_t array_id, uint16_t index, const void* data, uint16_t count);
+
+/**
+ * @brief Read data from user array
+ * @param array_id Array ID
+ * @param index Element index
+ * @param data Pointer to output buffer
+ * @param count Number of elements to read
+ * @return HAL_OK on success, HAL_ERROR on failure
+ */
+HAL_StatusTypeDef flash_read_user_array(uint8_t array_id, uint16_t index, void* data, uint16_t count);
+
+/**
+ * @brief Get user array information
+ * @param array_id Array ID
+ * @param descriptor Pointer to output descriptor
+ * @return HAL_OK on success, HAL_ERROR on failure
+ */
+HAL_StatusTypeDef flash_get_array_info(uint8_t array_id, array_descriptor_t* descriptor);
+
+/**
+ * @brief List all active user arrays
+ * @param array_list Output buffer for array descriptors
+ * @param max_arrays Maximum arrays to return
+ * @return Number of active arrays
+ */
+uint8_t flash_list_user_arrays(array_descriptor_t* array_list, uint8_t max_arrays);
+
+/**
+ * @brief Find array by name
+ * @param name Array name to search for
+ * @return Array ID on success, -1 if not found
+ */
+int8_t flash_find_array_by_name(const char* name);
+
 //--- System Statistics Functions ---
-/**
- * @brief Increment boot counter
- * @return HAL_OK on success, HAL_ERROR on failure
- */
 HAL_StatusTypeDef flash_increment_boot_count(void);
-
-/**
- * @brief Get current boot count
- * @return Number of successful boots
- */
 uint32_t flash_get_boot_count(void);
-
-/**
- * @brief Increment error counter for specific error type
- * @param error_type 0=hard_fault, 1=encoder_error, 2=can_error, 3=flash_error
- * @return HAL_OK on success, HAL_ERROR on failure
- */
 HAL_StatusTypeDef flash_increment_error_count(uint8_t error_type);
 
 //--- Reset and Sticky Flag Functions ---
-/**
- * @brief Get reset sticky flag value
- * @return Current sticky flag value (0xDEADBEEF if reset during enable)
- */
 uint32_t flash_get_reset_sticky_flag(void);
-
-/**
- * @brief Set reset sticky flag and save to flash
- * @param flag New flag value (typically 0xDEADBEEF)
- * @return HAL_OK on success, HAL_ERROR on failure
- */
 HAL_StatusTypeDef flash_set_reset_sticky_flag(uint32_t flag);
-
-/**
- * @brief Clear reset sticky flag
- * @return HAL_OK on success, HAL_ERROR on failure
- */
 HAL_StatusTypeDef flash_clear_reset_sticky_flag(void);
 
 //--- Factory and Maintenance Functions ---
-/**
- * @brief Reset user configuration to factory defaults
- * @return HAL_OK on success, HAL_ERROR on failure
- * @note This preserves critical/factory calibration data
- */
 HAL_StatusTypeDef flash_factory_reset(void);
-
-/**
- * @brief Get firmware version from critical data
- * @return Firmware version as 32-bit value (major.minor.patch)
- */
 uint32_t flash_get_firmware_version(void);
-
-/**
- * @brief Get device serial number from critical data
- * @return Device serial number
- */
 uint32_t flash_get_serial_number(void);
 
-//--- Direct Access Functions (Advanced Use) ---
-/**
- * @brief Get pointer to cached user configuration
- * @return Pointer to user config structure (read-only)
- * @warning Use with caution - direct modification bypasses validation
- */
+//--- Direct Access Functions ---
 const flash_user_config_t* flash_get_user_config_ptr(void);
-
-/**
- * @brief Get pointer to cached critical data
- * @return Pointer to critical data structure (read-only)
- * @warning Use with caution - direct modification bypasses validation
- */
 const flash_critical_data_t* flash_get_critical_data_ptr(void);
-
-/**
- * @brief Force write of cached user config to flash
- * @return HAL_OK on success, HAL_ERROR on failure
- * @note Use after direct modifications to cached data
- */
 HAL_StatusTypeDef flash_save_user_config(void);
 
 //--- Utility Functions ---
-/**
- * @brief Calculate CRC32 checksum for data validation
- * @param data Pointer to data buffer
- * @param length Length of data in bytes
- * @return CRC32 checksum value
- */
 uint32_t flash_crc32(const uint8_t* data, size_t length);
-
-/**
- * @brief Validate flash data integrity
- * @return HAL_OK if both user and critical data are valid, HAL_ERROR otherwise
- */
 HAL_StatusTypeDef flash_validate_integrity(void);
-
-/**
- * @brief Get flash usage statistics
- * @param user_pages_used Output: number of user config pages used
- * @param critical_pages_used Output: number of critical data pages used
- * @param total_pages_available Output: total pages available for configuration
- */
 void flash_get_usage_stats(uint32_t* user_pages_used,
                           uint32_t* critical_pages_used,
+                          uint32_t* array_pages_used,
                           uint32_t* total_pages_available);
+
+//--- Array Storage Utilities ---
+HAL_StatusTypeDef flash_defragment_arrays(void);
+uint32_t flash_get_array_storage_free_bytes(void);
+HAL_StatusTypeDef flash_backup_arrays(void);
+HAL_StatusTypeDef flash_restore_arrays(void);
 
 #endif // FLASH_CONFIG_H

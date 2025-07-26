@@ -33,6 +33,7 @@ public class CoreDeviceFaultLayer {
 
 
     public CoreDeviceFaultLayer() {
+
     }
 
 
@@ -292,7 +293,7 @@ public class CoreDeviceFaultLayer {
     private final CoreDeviceListener faultListener = new CoreDeviceListener() {
         @Override
         public void onDataReceived(byte[] data) {
-            synchronized (this) {
+            synchronized (CoreDeviceFaultLayer.this) {
                 byte booleanStatusByte = data[0];
 
                 // Extract faults using BitSet
@@ -301,9 +302,28 @@ public class CoreDeviceFaultLayer {
                     faults.set(i, fault);
                     stickyFaults.set(i, stickyFaults.get(i) || fault); // Update sticky faults
                 }
-        
+
+                // Update individual fault variables for backward compatibility
+                isFault_Hardware = faults.get(0);
+                isFault_LoopOverrun = faults.get(1);
+                isFault_CANGeneral = faults.get(2);
+                isFault_BootDuringEnable = faults.get(3);
+                isFault_BadMagnet = faults.get(4);
+                isFault_RotationOverspeed = faults.get(5);
+                isFault_CANClogged = faults.get(6);
+                isFault_UnderVolted = faults.get(7);
+
+                isStickyFault_Hardware |= isFault_Hardware;
+                isStickyFault_LoopOverrun |= isFault_LoopOverrun;
+                isStickyFault_CANGeneral |= isFault_CANGeneral;
+                isStickyFault_BootDuringEnable |= isFault_BootDuringEnable;
+                isStickyFault_BadMagnet |= isFault_BadMagnet;
+                isStickyFault_RotationOverspeed |= isFault_RotationOverspeed;
+                isStickyFault_CANClogged |= isFault_CANClogged;
+                isStickyFault_UnderVolted |= isFault_UnderVolted;
+
                 // Handle CAN fault logic
-                boolean currentCANFault = faults.get(6) || faults.get(2); // CANClogged or CANGeneral
+                boolean currentCANFault = isFault_CANClogged || isFault_CANGeneral;
                 if (previousCANFault && !currentCANFault) {
                     isStickyFault_MomentaryCanBusLoss = true;
                 }

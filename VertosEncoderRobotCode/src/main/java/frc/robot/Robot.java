@@ -4,8 +4,6 @@
 
 package frc.robot;
 
-import com.ctre.phoenix6.hardware.CANcoder;
-
 import edu.wpi.first.wpilibj.TimedRobot;
 import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
 import edu.wpi.first.wpilibj2.command.Command;
@@ -40,7 +38,7 @@ public class Robot extends TimedRobot {
     SmartDashboard.putBoolean("Encoder Fault: CAN Clogged", encoder.FAULT.Warning_CANClogged());
     SmartDashboard.putBoolean("Encoder Fault: Rotation Overspeed", encoder.FAULT.Error_RotationOverspeed());
     SmartDashboard.putBoolean("Encoder Fault: Under Volted", encoder.FAULT.Error_UnderVolted());
-    //SmartDashboard.putBoolean("Encoder Connected", encoder.isConnected());
+    // SmartDashboard.putBoolean("Encoder Connected", encoder.isConnected());
   }
 
   @Override

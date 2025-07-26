@@ -27,6 +27,8 @@
 #include "error_blink.h"
 #include "flex_encoder.h"
 #include "flash_config.h"
+#include "vertos_calculations.h"
+
 
 #include "stm32g0xx_hal_flash.h"
 /* USER CODE END Includes */
@@ -104,9 +106,6 @@ volatile uint32_t lastHeartbeatTime = 0;
 // At the top of main.c, define a backup register or flash address for the sticky flag
 #define RESET_STICKY_FLAG_ADDR 0x0803F020 // Example flash address
 
-// Constants for scaling to 16-bit values
-const double VELOCITY_SCALE_FACTOR = 1000.0;     // Scale velocity to fit in 16-bit range
-const double ACCELERATION_SCALE_FACTOR = 100.0;  // Scale acceleration to fit in 16-bit range
 
 const int TARGET_LOOP_TIME = 10; // ms
 
@@ -120,18 +119,6 @@ double sensorAccel = 0.0;
 // Store current sample
 // Simple backward difference velocity calculation with low-pass filtering
 
-static int64_t prevMultiTurnCounts = 0;
-static uint32_t prevTimeMillisec = 0;
-static float filteredVelocityCPS = 0.0f;
-static float filteredAccelCPS2 = 0.0f;
-
-// Optimized integer-based velocity/acceleration calculation variables
-int64_t lastMultiTurnCounts = 0;
-uint32_t lastSystemTimeMillisec = 0;
-int32_t lastVelocityCPS = 0;        // Last velocity in counts per second
-int32_t lastAccelCPS2 = 0;          // Last acceleration in counts per second squared
-int32_t velocityCountsScaled = 0;   // Final scaled velocity for CAN transmission
-int32_t accelCountsScaled = 0;      // Final scaled acceleration for CAN transmission
 
 // Boolean status variables (8 different boolean messages)
 int isHardwareFault = 0;         // Bit 0: hardware fault status
@@ -160,15 +147,13 @@ static void MX_USB_DRD_FS_PCD_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_SPI2_Init(void);
 /* USER CODE BEGIN PFP */
+
 // Function prototypes for velocity calculation API
 int setVelocityCalculationSamples(int samples);
 int getVelocityCalculationSamples(void);
 int getMaxVelocityCalculationSamples(void);
 int getMinVelocityCalculationSamples(void);
 int getVelocityCalculationInfo(int samples, uint32_t* timeSpanMs, int* noiseReduction);
-
-// static inline const int64_t* get_timeCoeffs(void);
-// static inline int64_t get_timeSquaredSum(void);
 
 // ADD THESE MISSING PROTOTYPES:
 void reset_counts(void);
@@ -178,6 +163,7 @@ void set_encoder_direction(int direction);
 void reset_all_faults(void);
 void txHeaderConfigure(FDCAN_TxHeaderTypeDef* header);
 void txHeaderConfigureBooleanStatus(FDCAN_TxHeaderTypeDef* header);
+void rxHeaderConfigure(FDCAN_RxHeaderTypeDef* header);  // Add this missing prototype
 int was_reset_during_enable(void);
 void clear_reset_sticky_flag(void);
 void set_reset_sticky_flag(void);
@@ -200,15 +186,13 @@ uint32_t cdcRxLen = 0;
 FDCAN_TxHeaderTypeDef TxHeaderPosition;
 FDCAN_TxHeaderTypeDef TxHeaderVelocityAccel;
 FDCAN_TxHeaderTypeDef TxHeaderBooleanStatus;  // New header for boolean status
-
 FDCAN_RxHeaderTypeDef RxHeader;
-
-//uint32_t TxMailbox[4];
 
 uint8_t TxDataPosition[8] = { 0 };
 uint8_t TxDataVelocityAccel[8] = { 0 };  // Combined velocity and acceleration (8 bytes)
 uint8_t TxDataBooleanStatus[1] = { 0 };  // Boolean status data (1 byte)
 uint8_t RxData[64] = { 0 };
+
 int indx = 0;
 uint8_t count = 0;
 
@@ -218,12 +202,12 @@ uint8_t count = 0;
 
 // Function to update filter values in real-time
 void update_filter_settings(float vel_alpha, float acc_alpha) {
-    flash_set_velocity_alpha(vel_alpha);
-    flash_set_accel_alpha(acc_alpha);
+  flash_set_velocity_alpha(vel_alpha);
+  flash_set_accel_alpha(acc_alpha);
 }
 
 uint32_t get_tx_identifier(uint32_t baseCanId, uint32_t apiId) {
-    return (baseCanId + device_id) | (apiId << 10);  // Add device_id like Java does
+  return (baseCanId + device_id) | (apiId << 10);  // Add device_id like Java does
 }
 
 
@@ -234,123 +218,119 @@ uint32_t get_tx_identifier(uint32_t baseCanId, uint32_t apiId) {
  *
  **************************************************************************************************/
 void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs) {
-    if ((RxFifo0ITs & FDCAN_IT_RX_FIFO0_NEW_MESSAGE) != RESET) {
-        // 1. Retrieve the received CAN message from FIFO0
-        if (HAL_FDCAN_GetRxMessage(hfdcan, FDCAN_RX_FIFO0, &RxHeader, RxData) != HAL_OK) {
-            Error_Handler();
-        }
+  if ((RxFifo0ITs & FDCAN_IT_RX_FIFO0_NEW_MESSAGE) != RESET) {
+  if (HAL_FDCAN_GetRxMessage(hfdcan, FDCAN_RX_FIFO0, &RxHeader, RxData) != HAL_OK) {
+    Error_Handler();
+  }
 
-        // 2. Re-enable the notification for new messages
-        if (HAL_FDCAN_ActivateNotification(hfdcan, FDCAN_IT_RX_FIFO0_NEW_MESSAGE, 0) != HAL_OK) {
-            Error_Handler();
-        }
+  if (HAL_FDCAN_ActivateNotification(hfdcan, FDCAN_IT_RX_FIFO0_NEW_MESSAGE, 0) != HAL_OK) {
+    Error_Handler();
+  }
 
-        // 3. If the message is a heartbeat (from RoboRIO), update the heartbeat timer
-        if (RxHeader.Identifier == ROBORIO_CAN_ID) {
-            lastHeartbeatTime = HAL_GetTick();
-            return;
-        }
+  // Heartbeat from RoboRIO (special case)
+  if (RxHeader.Identifier == ROBORIO_CAN_ID) {
+    lastHeartbeatTime = HAL_GetTick();
+    return;
+  }
 
-        // 4. Handle specific command messages based on RxHeader.Identifier
-        // Device management commands (41-44)
-        if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 41)) {
-            // UPDATED: Use flash system instead of old method
-            uint32_t new_device_id = RxData[2];
-            flash_set_device_id(new_device_id);
-            TxHeaderPosition.Identifier = BASE_ID + new_device_id;
-            // REMOVED: writeData = TxHeaderPosition.Identifier;
-            // REMOVED: towr = 1;
+  // Parse WPILib CAN Extended ID
+  // 29 bits: [28:23] Manufacturer | [22:13] API ID | [12:7] Device ID | [6:0] Reserved
+  uint32_t identifier = RxHeader.Identifier;
+  uint8_t manufacturer = (identifier >> 23) & 0x3F;
+  uint16_t api_id = (identifier >> 13) & 0x3FF;
+  uint8_t reserved = identifier & 0x7F;
 
-        } else if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 42)) {
-            pooptest = 1;
-
-        } else if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 43)) {
-            // UPDATED: Use flash system factory reset
-            flash_factory_reset();
-
-        } else if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 44)) {
-            // Query all devices - send device UID (keep existing code)
-            uint32_t uid[3];
-            uid[0] = HAL_GetUIDw0();
-            uid[1] = HAL_GetUIDw1();
-            uid[2] = HAL_GetUIDw2();
-            uint8_t uidBytes[12];
-            uidBytes[0] = (uint8_t) (uid[0] >> 24);
-            uidBytes[1] = (uint8_t) (uid[0] >> 16);
-            uidBytes[2] = (uint8_t) (uid[0] >> 8);
-            uidBytes[3] = (uint8_t) (uid[0]);
-            uidBytes[4] = (uint8_t) (uid[1] >> 24);
-            uidBytes[5] = (uint8_t) (uid[1] >> 16);
-            uidBytes[6] = (uint8_t) (uid[1] >> 8);
-            uidBytes[7] = (uint8_t) (uid[1]);
-            uidBytes[8] = (uint8_t) (uid[2] >> 24);
-            uidBytes[9] = (uint8_t) (uid[2] >> 16);
-            uidBytes[10] = (uint8_t) (uid[2] >> 8);
-            uidBytes[11] = (uint8_t) (uid[2]);
-            TxHeaderPosition.DataLength = 8;
-            TxHeaderPosition.Identifier = BASE_ID + device_id_index;
-            HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &TxHeaderPosition, uidBytes);
-            TxHeaderPosition.Identifier = BASE_ID + flash_get_device_id();  // UPDATED
-        }
-        // Encoder control commands (10-13) - matching Java API IDs
-        else if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 10)) {
-            // Zero the encoder
-            reset_counts();
-        } else if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 11)) {
-            // UPDATED: Set encoder direction and save to flash
-            if (RxHeader.DataLength >= 1) {
-                int direction = (RxData[0] != 0) ? 1 : 0;
-                flash_set_encoder_direction(direction);
-                set_encoder_direction(direction);  // Also update runtime
-            }
-        } else if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 12)) {
-            set_led_hue(1.0f,1.0);
-            if (RxHeader.DataLength == 8) {
-                // Read all 8 bytes directly as int64_t (big-endian)
-                int64_t newCounts = ((int64_t)RxData[0] << 56) |
-                                   ((int64_t)RxData[1] << 48) |
-                                   ((int64_t)RxData[2] << 40) |
-                                   ((int64_t)RxData[3] << 32) |
-                                   ((int64_t)RxData[4] << 24) |
-                                   ((int64_t)RxData[5] << 16) |
-                                   ((int64_t)RxData[6] << 8) |
-                                   ((int64_t)RxData[7]);
-
-                // UPDATED: Save position offset to flash
-                flash_set_position_offset(newCounts);
-                set_counts(newCounts);
-            }
-        } else if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 13)) {
-            // UPDATED: Factory reset using flash system
-            if (RxHeader.DataLength >= 1 && RxData[0] != 0) {
-                flash_factory_reset();
-
-                // Reset runtime state
-                reset_counts();
-                set_encoder_direction(0);
-
-                // Update CAN ID
-                TxHeaderPosition.Identifier = BASE_ID + flash_get_device_id();
-            }
-        }
-
-        // ADD NEW COMMANDS for filter tuning (API IDs 20-21)
-        else if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 20)) {
-            // Set velocity filter alpha
-            if (RxHeader.DataLength == 4) {
-                float new_alpha;
-                memcpy(&new_alpha, RxData, sizeof(float));
-                flash_set_velocity_alpha(new_alpha);
-            }
-        } else if (RxHeader.Identifier == get_tx_identifier(BASE_ID, 21)) {
-            // Set acceleration filter alpha
-            if (RxHeader.DataLength == 4) {
-                float new_alpha;
-                memcpy(&new_alpha, RxData, sizeof(float));
-                flash_set_accel_alpha(new_alpha);
-            }
-        }
+  // Only respond to our manufacturer and reserved bits = 0
+    switch (api_id) {
+    case 41: {
+      // Set device ID (RxData[0] is new device ID)
+      uint8_t new_device_id = RxData[0];
+      flash_set_device_id(new_device_id);
+      TxHeaderPosition.Identifier = (BASE_ID & 0xFFF80000) | (POSITION_API_ID << 13) | (new_device_id << 7);
+      break;
     }
+    case 42:
+      pooptest = 1;
+      break;
+    case 43:
+      flash_factory_reset();
+      break;
+    case 44: {
+      // Query all devices - send device UID
+      uint32_t uid[3];
+      uid[0] = HAL_GetUIDw0();
+      uid[1] = HAL_GetUIDw1();
+      uid[2] = HAL_GetUIDw2();
+      uint8_t uidBytes[12];
+      uidBytes[0] = (uint8_t) (uid[0] >> 24);
+      uidBytes[1] = (uint8_t) (uid[0] >> 16);
+      uidBytes[2] = (uint8_t) (uid[0] >> 8);
+      uidBytes[3] = (uint8_t) (uid[0]);
+      uidBytes[4] = (uint8_t) (uid[1] >> 24);
+      uidBytes[5] = (uint8_t) (uid[1] >> 16);
+      uidBytes[6] = (uint8_t) (uid[1] >> 8);
+      uidBytes[7] = (uint8_t) (uid[1]);
+      uidBytes[8] = (uint8_t) (uid[2] >> 24);
+      uidBytes[9] = (uint8_t) (uid[2] >> 16);
+      uidBytes[10] = (uint8_t) (uid[2] >> 8);
+      uidBytes[11] = (uint8_t) (uid[2]);
+      TxHeaderPosition.DataLength = 8;
+      TxHeaderPosition.Identifier = (BASE_ID & 0xFFF80000) | (POSITION_API_ID << 13) | (device_id << 7);
+      HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &TxHeaderPosition, uidBytes);
+      TxHeaderPosition.Identifier = (BASE_ID & 0xFFF80000) | (POSITION_API_ID << 13) | (flash_get_device_id() << 7);
+      break;
+    }
+    case 10:
+      reset_counts();
+      break;
+    case 11:
+      if (RxHeader.DataLength >= 1) {
+      int direction = (RxData[0] != 0) ? 1 : 0;
+      flash_set_encoder_direction(direction);
+      set_encoder_direction(direction);
+      }
+      break;
+    case 8:
+      if (RxHeader.DataLength == 8) {
+      int64_t newCounts = ((int64_t)RxData[0] << 56) |
+             ((int64_t)RxData[1] << 48) |
+             ((int64_t)RxData[2] << 40) |
+             ((int64_t)RxData[3] << 32) |
+             ((int64_t)RxData[4] << 24) |
+             ((int64_t)RxData[5] << 16) |
+             ((int64_t)RxData[6] << 8) |
+             ((int64_t)RxData[7]);
+      set_counts(newCounts);
+      }
+      break;
+    case 13:
+      if (RxHeader.DataLength >= 1 && RxData[0] != 0) {
+      flash_factory_reset();
+      reset_counts();
+      set_encoder_direction(0);
+      TxHeaderPosition.Identifier = (BASE_ID & 0xFFF80000) | (POSITION_API_ID << 13) | (flash_get_device_id() << 7);
+      }
+      break;
+    case 20:
+      if (RxHeader.DataLength == 4) {
+      float new_alpha;
+      memcpy(&new_alpha, RxData, sizeof(float));
+      flash_set_velocity_alpha(new_alpha);
+      }
+      break;
+    case 21:
+      if (RxHeader.DataLength == 4) {
+      float new_alpha;
+      memcpy(&new_alpha, RxData, sizeof(float));
+      flash_set_accel_alpha(new_alpha);
+      }
+      break;
+    default:
+      // Unknown API ID, ignore
+      break;
+    }
+  
+  }
 }
 
 /* USER CODE END 0 */
@@ -360,459 +340,395 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
   * @retval int
   */
 int main(void) {
-	/* USER CODE BEGIN 1 */
-	HAL_StatusTypeDef positionCanStatus = HAL_ERROR;
-	HAL_StatusTypeDef velocityAccelCanStatus = HAL_ERROR;
-	HAL_StatusTypeDef booleanStatusCanStatus = HAL_ERROR;  // New status for boolean messages
+  /* USER CODE BEGIN 1 */
+  HAL_StatusTypeDef positionCanStatus = HAL_ERROR;
+  HAL_StatusTypeDef velocityAccelCanStatus = HAL_ERROR;
+  HAL_StatusTypeDef booleanStatusCanStatus = HAL_ERROR;  // New status for boolean messages
 
-	/* USER CODE END 1 */
+  /* USER CODE END 1 */
 
-	/* MCU Configuration--------------------------------------------------------*/
+  /* MCU Configuration--------------------------------------------------------*/
 
-	/* Reset of all peripherals, Initializes the Flash interface and the Systick. */
-	HAL_Init();
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
+  HAL_Init();
 
-	/* USER CODE BEGIN Init */
-	/* USER CODE END Init */
+  /* USER CODE BEGIN Init */
+  /* USER CODE END Init */
 
-	/* Configure the system clock */
-	SystemClock_Config();
+  /* Configure the system clock */
+  SystemClock_Config();
 
-	/* USER CODE BEGIN SysInit */
-	/* USER CODE END SysInit */
+  /* USER CODE BEGIN SysInit */
+  /* USER CODE END SysInit */
 
-	/* Initialize all configured peripherals */
-	MX_GPIO_Init();
-	MX_FDCAN1_Init();
-	MX_SPI1_Init();
-	MX_ADC1_Init();
-	MX_TIM3_Init();
-	MX_TIM4_Init();
-	MX_I2C1_Init();
-	MX_USB_DRD_FS_PCD_Init();
-	MX_TIM2_Init();
-	MX_SPI2_Init();
-	/* USER CODE BEGIN 2 */
+  /* Initialize all configured peripherals */
+  MX_GPIO_Init();
+  MX_FDCAN1_Init();
+  MX_SPI1_Init();
+  MX_ADC1_Init();
+  MX_TIM3_Init();
+  MX_TIM4_Init();
+  MX_I2C1_Init();
+  MX_USB_DRD_FS_PCD_Init();
+  MX_TIM2_Init();
+  MX_SPI2_Init();
+  /* USER CODE BEGIN 2 */
 
-	// Flex Encoder
-	// Initialize the encoder system
-  // if (FlexEncoder_Init(&hi2c1) != HAL_OK) {
-  //     Error_Handler();  // Fail-safe if setup fails
-  //     booleanStatus2 = 0;  // Encoder initialization failed
-  // } else {
-  //     booleanStatus2 = 1;  // Encoder initialization successful
-  // }
+  // Read back from Flash
+  uint64_t readData = *((uint64_t*) flashAddress);
 
-	// Call the hue cycling function
-	// Start PWM on all timer channels
-	HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_4);
-	HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
-	HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_4);
+  if (flash_config_init() != HAL_OK) {
+    // Flash initialization failed - use defaults but continue
+    Error_Handler();
+  }
 
-  ////#define FLASH_USER_START_ADDR   0x0800F800UL
-  //    // Let's store an integer (e.g. 0x12345678) in page "index = 0"
-  //	HAL_FLASH_Unlock();
-  //	HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, flashAddress, 0x12345678deadbeef);
-  //	HAL_FLASH_Lock();
-  //	UserFlash_WriteInt(0xdeadbeef, 0);
-  //	long poodata = UserFlash_ReadInt(0);
-  //
-  //	HAL_FLASH_Unlock();
-  //	HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, flashAddress+8, 0x12345678);
-  //	HAL_FLASH_Lock();
+  flash_increment_boot_count();
 
-	// FLASH_EraseInitTypeDef EraseInitStruct;
-	// uint32_t PageError;
-	// Unlock Flash
+  if (HAL_FDCAN_Start(&hfdcan1) != HAL_OK) {
+    Error_Handler();
+    isCANInvalid = 0;  // CAN initialization failed
+  } else {
+    isCANInvalid = 1;  // CAN initialization successful
+  }
 
-	// Read back from Flash
-	uint64_t readData = *((uint64_t*) flashAddress);
-
-  //	float hue = 0.0;
-  //	const float hue_increment = 1.0 / 100.0; // Increment to cycle in 1 second (100 steps)
-  //
-  //	for (int step = 0; step < 100; ++step)
-  //	{
-  //		set_led_hue(hue, 1.0);
-  //
-  //		hue += hue_increment;
-  //		HAL_Delay(5); // Delay 10 ms to achieve 1-second total duration
-  //	}
-
-    if (flash_config_init() != HAL_OK) {
-        // Flash initialization failed - use defaults but continue
-        Error_Handler();
-    }
-
-    flash_increment_boot_count();
-
-	if (HAL_FDCAN_Start(&hfdcan1) != HAL_OK) {
-		Error_Handler();
-		isCANInvalid = 0;  // CAN initialization failed
-	} else {
-		isCANInvalid = 1;  // CAN initialization successful
-	}
-
-	if (HAL_FDCAN_ActivateNotification(&hfdcan1, FDCAN_IT_RX_FIFO0_NEW_MESSAGE, 0) != HAL_OK) {
-		Error_Handler();
-	}
+  if (HAL_FDCAN_ActivateNotification(&hfdcan1, FDCAN_IT_RX_FIFO0_NEW_MESSAGE, 0) != HAL_OK) {
+    Error_Handler();
+  }
   
-	if ((uint32_t) readData == 0xffffffff) {
-		TxHeaderPosition.Identifier = BASE_ID;
-	} else {
-		TxHeaderPosition.Identifier = (uint32_t) readData;
-	}
+  if ((uint32_t) readData == 0xffffffff) {
+    TxHeaderPosition.Identifier = BASE_ID;
+  } else {
+    TxHeaderPosition.Identifier = (uint32_t) readData;
+  }
 
-    TxHeaderPosition.Identifier = BASE_ID + flash_get_device_id();
+  TxHeaderPosition.Identifier = BASE_ID + flash_get_device_id();
 
 
-	// Configure position message header (8 bytes)
-	txHeaderConfigure(&TxHeaderPosition);
-	// Configure velocity/acceleration message header (8 bytes)
-	txHeaderConfigure(&TxHeaderVelocityAccel);
-	// Configure boolean status message header (1 byte)
-	txHeaderConfigureBooleanStatus(&TxHeaderBooleanStatus);
+  // Configure position message header (8 bytes)
+  txHeaderConfigure(&TxHeaderPosition);
+  // Configure velocity/acceleration message header (8 bytes)
+  txHeaderConfigure(&TxHeaderVelocityAccel);
+  // Configure boolean status message header (1 byte)
+  txHeaderConfigureBooleanStatus(&TxHeaderBooleanStatus);
 
-	// ADC
-	HAL_ADC_Start(&hadc1);
+  rxHeaderConfigure(&RxHeader);
 
-	// start CAN IC
-	// Enable CAN transceiver by setting EN and STB_N HIGH
-	HAL_GPIO_WritePin(CAN_ENABLE_GPIO_Port, CAN_ENABLE_Pin, GPIO_PIN_SET); // EN HIGH
-	HAL_GPIO_WritePin(CAN_NSTANDBY_GPIO_Port, CAN_NSTANDBY_Pin, GPIO_PIN_SET); // STB_N HIGH
+  // ADC
+  HAL_ADC_Start(&hadc1);
 
-	// Check if ERR_N is low, indicating an error or flag set
-	int err_flag = HAL_GPIO_ReadPin(CAN_NERROR_GPIO_Port, CAN_NERROR_Pin);
+  // start CAN IC
+  // Enable CAN transceiver by setting EN and STB_N HIGH
+  HAL_GPIO_WritePin(CAN_ENABLE_GPIO_Port, CAN_ENABLE_Pin, GPIO_PIN_SET); // EN HIGH
+  HAL_GPIO_WritePin(CAN_NSTANDBY_GPIO_Port, CAN_NSTANDBY_Pin, GPIO_PIN_SET); // STB_N HIGH
 
-	if (err_flag == GPIO_PIN_RESET) { // ERR_N is LOW
-		// Clear flags by toggling STB_N or EN based on the datasheet
-		HAL_GPIO_WritePin(CAN_NSTANDBY_GPIO_Port, CAN_NSTANDBY_Pin, GPIO_PIN_RESET); // STB_N LOW
-		HAL_Delay(10); // Allow some stabilization time
-		HAL_GPIO_WritePin(CAN_NSTANDBY_GPIO_Port, CAN_NSTANDBY_Pin, GPIO_PIN_SET);   // STB_N HIGH
+  // Check if ERR_N is low, indicating an error or flag set
+  int err_flag = HAL_GPIO_ReadPin(CAN_NERROR_GPIO_Port, CAN_NERROR_Pin);
 
-		// Optionally toggle EN if STB_N toggle doesn't clear the flag
-		HAL_GPIO_WritePin(CAN_ENABLE_GPIO_Port, CAN_ENABLE_Pin, GPIO_PIN_RESET); // EN LOW
-		HAL_Delay(10); // Allow stabilization
-		HAL_GPIO_WritePin(CAN_ENABLE_GPIO_Port, CAN_ENABLE_Pin, GPIO_PIN_SET); // EN HIGH
-	}
+  if (err_flag == GPIO_PIN_RESET) { // ERR_N is LOW
+    // Clear flags by toggling STB_N or EN based on the datasheet
+    HAL_GPIO_WritePin(CAN_NSTANDBY_GPIO_Port, CAN_NSTANDBY_Pin, GPIO_PIN_RESET); // STB_N LOW
+    HAL_Delay(10); // Allow some stabilization time
+    HAL_GPIO_WritePin(CAN_NSTANDBY_GPIO_Port, CAN_NSTANDBY_Pin, GPIO_PIN_SET);   // STB_N HIGH
 
+    // Optionally toggle EN if STB_N toggle doesn't clear the flag
+    HAL_GPIO_WritePin(CAN_ENABLE_GPIO_Port, CAN_ENABLE_Pin, GPIO_PIN_RESET); // EN LOW
+    HAL_Delay(10); // Allow stabilization
+    HAL_GPIO_WritePin(CAN_ENABLE_GPIO_Port, CAN_ENABLE_Pin, GPIO_PIN_SET); // EN HIGH
+  }
+
+  if (mt6835_update_counts(&hspi1) == HAL_OK) {
+    // Wait for a few successful reads before declaring ready
+    for (int i = 0; i < 10; i++) {
+      if (mt6835_update_counts(&hspi1) == HAL_OK) {
+        HAL_Delay(10);
+      } else {
+        break;
+      }
+    }
+    encoder_ready = 1;
+  }
+  vertos_calculations_init();
+
+
+  pooptest = 1;
+  // Set the flag ONCE to detect future resets
+  flash_set_reset_sticky_flag(0xDEADBEEF);
+  /* USER CODE END 2 */
+
+  /* Infinite loop */
+  /* USER CODE BEGIN WHILE */
+  while (1) {
+  uint32_t currentTimeMillisec = HAL_GetTick();
+
+//  if (pooptest == 1) {
+//    pooptest = 2;
+//    flash_set_test_array_u32_value(2, 1234);
+//  }
+//
+//  if(pooptest == 2) {
+//    flash_set_test_array_u32_value(1, 02);
+//  }
+
+  //----------------------------------------------------------------------------------------------------------
+  // Read the multi-turn counts and single-turn counts
+  //----------------------------------------------------------------------------------------------------------
+  int64_t multiTurnCounts = get_counts_multi_turn();
+  uint32_t singleTurnCounts = get_counts_single_turn();
+
+  if (encoder_ready) {
+    // Single encoder update call per loop
     if (mt6835_update_counts(&hspi1) == HAL_OK) {
-        // Wait for a few successful reads before declaring ready
-        for (int i = 0; i < 10; i++) {
-            if (mt6835_update_counts(&hspi1) == HAL_OK) {
-                HAL_Delay(10);
-            } else {
-                break;
-            }
-        }
-        encoder_ready = 1;
+
+    // Pack multi-turn counts directly as 64-bit value (8 bytes, big-endian)
+    TxDataPosition[0] = (uint8_t)(multiTurnCounts >> 56);  // MSB
+    TxDataPosition[1] = (uint8_t)(multiTurnCounts >> 48);
+    TxDataPosition[2] = (uint8_t)(multiTurnCounts >> 40);
+    TxDataPosition[3] = (uint8_t)(multiTurnCounts >> 32);
+    TxDataPosition[4] = (uint8_t)(multiTurnCounts >> 24);
+    TxDataPosition[5] = (uint8_t)(multiTurnCounts >> 16);
+    TxDataPosition[6] = (uint8_t)(multiTurnCounts >> 8);
+    TxDataPosition[7] = (uint8_t)(multiTurnCounts);        // LSB
+
+    int flexEncoderMode = 1;
+
+    //-----------------------------------------------------------------------------------------------------------
+    // Dynamic Linear Regression velocity and acceleration calculations
+    //-----------------------------------------------------------------------------------------------------------
+
+    // Update calculations with new encoder data
+    vertos_calculations_update(multiTurnCounts, currentTimeMillisec);
+
+    // Use the results from the calculation
+    int32_t velocityCountsScaled = vertos_calculations_get_velocity_scaled();
+    int32_t accelCountsScaled = vertos_calculations_get_acceleration_scaled();
+
+    TxDataBooleanStatus[0] = 0;  // Start with empty byte: 00000000
+    TxDataBooleanStatus[0] |= (isHardwareFault & 0x01) << 0;       // Add bit 0
+    TxDataBooleanStatus[0] |= (isLoopOverrun & 0x01) << 1;         // Add bit 1
+    TxDataBooleanStatus[0] |= (isCANInvalid & 0x01) << 2;          // Add bit 2
+    TxDataBooleanStatus[0] |= (isResetDuringEnable & 0x01) << 3;   // Add bit 3
+    TxDataBooleanStatus[0] |= (isMagnetWeakSignal & 0x01) << 4;    // Add bit 4
+    TxDataBooleanStatus[0] |= (isRotationOverspeed & 0x01) << 5;   // Add bit 5
+    TxDataBooleanStatus[0] |= (isCANClogged & 0x01) << 6;          // Add bit 6
+    TxDataBooleanStatus[0] |= (isUnderVolted & 0x01) << 7;         // Add bit 7
+
+    // Pack combined velocity and acceleration as 8 bytes (4 bytes velocity + 4 bytes acceleration, both 32-bit signed)
+    // Big-endian format
+    TxDataVelocityAccel[0] = (uint8_t)(velocityCountsScaled >> 24);    // Use scaled values
+    TxDataVelocityAccel[1] = (uint8_t)(velocityCountsScaled >> 16);
+    TxDataVelocityAccel[2] = (uint8_t)(velocityCountsScaled >> 8);
+    TxDataVelocityAccel[3] = (uint8_t)(velocityCountsScaled);          // Velocity LSB
+    TxDataVelocityAccel[4] = (uint8_t)(accelCountsScaled >> 24);       // Use scaled values
+    TxDataVelocityAccel[5] = (uint8_t)(accelCountsScaled >> 16);
+    TxDataVelocityAccel[6] = (uint8_t)(accelCountsScaled >> 8);
+    TxDataVelocityAccel[7] = (uint8_t)(accelCountsScaled);             // Acceleration LSB
+
+    // Add message to CAN Tx FIFO queue
+    // Calculate base CAN ID for this device
+    uint32_t baseCanId = BASE_ID + device_id;
+
+    // Position message: embed API ID 0 in the CAN arbitration ID (8 bytes - raw counts)
+    TxHeaderPosition.Identifier = baseCanId | (POSITION_API_ID << 6);           // API 0: baseCanId | 0x000
+    // Combined velocity/acceleration message: embed API ID 1 in the CAN arbitration ID (8 bytes)
+    TxHeaderVelocityAccel.Identifier = baseCanId | (VELOCITY_ACCEL_API_ID << 6); // API 1: baseCanId | 0x040
+    // Boolean status message: embed API ID 2 in the CAN arbitration ID (1 byte)
+    TxHeaderBooleanStatus.Identifier = baseCanId | (BOOLEAN_STATUS_API_ID << 6); // API 2: baseCanId | 0x080
+
+    // returns HAL_Error if fifo queue is full or CAN is not initialized correctly
+    // HAL_OK otherwise
+    positionCanStatus = HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &TxHeaderPosition, TxDataPosition);
+    velocityAccelCanStatus = HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &TxHeaderVelocityAccel, TxDataVelocityAccel);
+    booleanStatusCanStatus = HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &TxHeaderBooleanStatus, TxDataBooleanStatus);
+
+    } else {
+    // Encoder read failed while ready - handle gracefully
+    mt6835_error_count++;
+    if (mt6835_error_count > 10) { // Higher threshold
+      encoder_ready = 0; // Mark as not ready
+      isHardwareFault = 1;
     }
 
-    // Set the flag ONCE to detect future resets
-    flash_set_reset_sticky_flag(0xDEADBEEF);
-	/* USER CODE END 2 */
+    // Set error status but don't flood CAN
+    positionCanStatus = HAL_ERROR;
+    velocityAccelCanStatus = HAL_ERROR;
+    booleanStatusCanStatus = HAL_ERROR;
+    }
+  } else {
+    static uint32_t lastInitAttempt = 0;
 
-	/* Infinite loop */
-	/* USER CODE BEGIN WHILE */
-	while (1) {
-		uint32_t currentTimeMillisec = HAL_GetTick();
+    // Only try initialization every 100ms to avoid overwhelming the SPI bus
+    if ((currentTimeMillisec - lastInitAttempt) >= 100) {
+    if (mt6835_update_counts(&hspi1) == HAL_OK) {
+      // Need multiple consecutive successful reads
+      int success_count = 0;
+      for (int i = 0; i < 5; i++) {
+      HAL_Delay(2); // Small delay between reads
+      if (mt6835_update_counts(&hspi1) == HAL_OK) {
+        success_count++;
+      } else {
+        break;
+      }
+      }
 
+      if (success_count >= 5) {
+      encoder_ready = 1;
+      mt6835_error_count = 0;
 
+      // Reset velocity calculation state
+      }
+    }
+    lastInitAttempt = currentTimeMillisec;
+    }
 
-		/* Flex Encoder Capabilities*/
-    // if (flexEncoderMode == 1) {
-    //     FlexEncoder_UpdateAll();
+    // Set error status for CAN
+    positionCanStatus = HAL_ERROR;
+    velocityAccelCanStatus = HAL_ERROR;
+    booleanStatusCanStatus = HAL_ERROR;
+  }
 
-    //     int16_t data[3][MLX_COUNT];
-    //     FlexEncoder_Get(data);
+  //------------------------------------------------------------------------------------------------------------------------
+  //  Error handling and status updates
+  //--------------------------------------------------------------------------------------------------------
+	uint32_t baseCanId = BASE_ID + device_id;
 
-    //     // Access data:
-    //     int16_t x0 = data[0][0];  // X from sensor 0
-    //     int16_t z2 = data[2][2];  // Z from sensor 2
-    //     //HAL_Delay(2000);
-    // }
+  // Only check for clogging if we actually tried to send messages
+  if (encoder_ready) {
+    if (positionCanStatus != HAL_OK || velocityAccelCanStatus != HAL_OK || booleanStatusCanStatus != HAL_OK) {
+        // Position message: embed API ID 0 in the CAN arbitration ID (8 bytes - raw counts)
+        TxHeaderPosition.Identifier = baseCanId | (POSITION_API_ID << 6);           // API 0: baseCanId | 0x000
+        // Combined velocity/acceleration message: embed API ID 1 in the CAN arbitration ID (8 bytes)
+        TxHeaderVelocityAccel.Identifier = baseCanId | (VELOCITY_ACCEL_API_ID << 6); // API 1: baseCanId | 0x040
+        // Boolean status message: embed API ID 2 in the CAN arbitration ID (1 byte)
+        TxHeaderBooleanStatus.Identifier = baseCanId | (BOOLEAN_STATUS_API_ID << 6); // API 2: baseCanId | 0x080
 
-		towr = 1;
-		if (towr == 1) {
-			towr = 0;
-			flash_set_device_id(2);
-			flash_set_velocity_alpha(0.5);
-		}
+        // returns HAL_Error if fifo queue is full or CAN is not initialized correctly
+        // HAL_OK otherwise
+        positionCanStatus = HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &TxHeaderPosition, TxDataPosition);
+        velocityAccelCanStatus = HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &TxHeaderVelocityAccel, TxDataVelocityAccel);
+        booleanStatusCanStatus = HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &TxHeaderBooleanStatus, TxDataBooleanStatus);
 
-		// Read the angle and set LED hue
-		//encAngle = mt6835_read_angle(&hspi1);
+      } else {
+        // Encoder read failed while ready - handle gracefully
+        mt6835_error_count++;
+        if (mt6835_error_count > 10) { // Higher threshold
+          encoder_ready = 0; // Mark as not ready
+          isHardwareFault = 1;
+        }
 
-		// Prepare data for CAN transmission
-		// Read the angle as counts
-		//mt6835_read_counts(&hspi1);
+        // Set error status but don't flood CAN
+        positionCanStatus = HAL_ERROR;
+        velocityAccelCanStatus = HAL_ERROR;
+        booleanStatusCanStatus = HAL_ERROR;
+      }
+    } else {
+      static uint32_t lastInitAttempt = 0;
 
-		//----------------------------------------------------------------------------------------------------------
-		// Read the multi-turn counts and single-turn counts
-		//----------------------------------------------------------------------------------------------------------
-		int64_t multiTurnCounts = get_counts_multi_turn();
-		uint32_t singleTurnCounts = get_counts_single_turn();
+      // Only try initialization every 100ms to avoid overwhelming the SPI bus
+      if ((currentTimeMillisec - lastInitAttempt) >= 100) {
+        if (mt6835_update_counts(&hspi1) == HAL_OK) {
+          // Need multiple consecutive successful reads
+          int success_count = 0;
+          for (int i = 0; i < 5; i++) {
+            HAL_Delay(2); // Small delay between reads
+            if (mt6835_update_counts(&hspi1) == HAL_OK) {
+              success_count++;
+            } else {
+              break;
+            }
+          }
 
-	    if (encoder_ready) {
-	        // Single encoder update call per loop
-	        if (mt6835_update_counts(&hspi1) == HAL_OK) {
+          if (success_count >= 5) {
+            encoder_ready = 1;
+            mt6835_error_count = 0;
 
-				// Pack multi-turn counts directly as 64-bit value (8 bytes, big-endian)
-				TxDataPosition[0] = (uint8_t)(multiTurnCounts >> 56);  // MSB
-				TxDataPosition[1] = (uint8_t)(multiTurnCounts >> 48);
-				TxDataPosition[2] = (uint8_t)(multiTurnCounts >> 40);
-				TxDataPosition[3] = (uint8_t)(multiTurnCounts >> 32);
-				TxDataPosition[4] = (uint8_t)(multiTurnCounts >> 24);
-				TxDataPosition[5] = (uint8_t)(multiTurnCounts >> 16);
-				TxDataPosition[6] = (uint8_t)(multiTurnCounts >> 8);
-				TxDataPosition[7] = (uint8_t)(multiTurnCounts);        // LSB
+            // Reset velocity calculation state
+          }
+        }
+        lastInitAttempt = currentTimeMillisec;
+      }
 
-				int flexEncoderMode = 1;
+      // Set error status for CAN
+      positionCanStatus = HAL_ERROR;
+      velocityAccelCanStatus = HAL_ERROR;
+      booleanStatusCanStatus = HAL_ERROR;
+    }
 
-				//-----------------------------------------------------------------------------------------------------------
-				// Dynamic Linear Regression velocity and acceleration calculations
-				//-----------------------------------------------------------------------------------------------------------
+    //------------------------------------------------------------------------------------------------------------------------
+    //  Error handling and status updates
+    //--------------------------------------------------------------------------------------------------------
+    // Only check for clogging if we actually tried to send messages
+    if (encoder_ready) {
+      if (positionCanStatus != HAL_OK || velocityAccelCanStatus != HAL_OK || booleanStatusCanStatus != HAL_OK) {
+        if ((currentTimeMillisec - lastHeartbeatTime) > HEARTBEAT_TIMEOUT) {
+          isCANInvalid = 1;
+        } else {
+          isCANClogged = 1;
+        }
+      } else {
+        isCANInvalid = 0;
+        isCANClogged = 0;
+      }
+    }
 
-				 if (prevTimeMillisec != 0) {
-					int64_t deltaCounts = multiTurnCounts - prevMultiTurnCounts;
-					uint32_t deltaTime = currentTimeMillisec - prevTimeMillisec;
+    if(get_weak_magnetic_field_warning() == 1) {
+      isMagnetWeakSignal = 1;  // Magnet is not in ideal range
+    } else {
+      isMagnetWeakSignal = 0;  // Magnet is in ideal range
+    }
 
-					if (deltaTime > 0) {
-						float velocityCPS = (float)deltaCounts * 1000.0f / (float)deltaTime;
+    if(get_under_voltage_warning() == 1) {
+      isUnderVolted = 1;  // System is under-volted
+    } else {
+      isUnderVolted = 0;  // System is not under-volted
+    }
 
-						// Use flash-stored filter coefficients
-						float vel_alpha = flash_get_velocity_alpha();
-						float acc_alpha = flash_get_accel_alpha();
+    if(get_rotation_overspeed_warning() == 1) {
+      isRotationOverspeed = 1;  // Rotation is overspeed
+    } else {
+      isRotationOverspeed = 0;  // Rotation is not overspeed
+    }
 
-						filteredVelocityCPS = vel_alpha * velocityCPS + (1.0f - vel_alpha) * filteredVelocityCPS;
-						float accelCPS2 = (filteredVelocityCPS - lastVelocityCPS) * 1000.0f / (float)deltaTime;
-						filteredAccelCPS2 = acc_alpha * accelCPS2 + (1.0f - acc_alpha) * filteredAccelCPS2;
+    if (mt6835_update_counts(&hspi1) != HAL_OK) {
+      mt6835_error_count++;
+      if (mt6835_error_count > 5) { // threshold for hardware fault
+        isHardwareFault = 1;
+      }
+    } else {
+      mt6835_error_count = 0;
+      isHardwareFault = 0;
+    }
 
-						velocityCountsScaled = (int32_t)filteredVelocityCPS;
-						accelCountsScaled = (int32_t)filteredAccelCPS2;
+    // LED status logic for all boolean statuses
+    if (isHardwareFault == 1) {
+      handle_error_blink("SOS", 0.0f); // Red - Hardware fault (emergency) - SOS
+    } else if (isLoopOverrun == 1) {
+      handle_error_blink("M", 0.16f); // Yellow - Overrun - M (dash-dash)
+    } else if (isUnderVolted == 1) {
+      handle_error_blink("I", 0.16f); // Yellow - Under voltage - I (dot-dot)
+    } else if (isRotationOverspeed == 1) {
+      handle_error_blink("S", 0.16f); // Yellow - Rotation Overspeed - S (dot-dot-dot)
+    } else if (isCANInvalid == 1) {
+      handle_error_blink("H", 0.83f); // Purple - CAN Invalid - H (dot-dot-dot-dot)
+    } else if (isCANClogged == 1) {
+      handle_error_blink("5", 0.83f); // Purple - CAN Clogged - 5 (dot-dot-dot-dot-dot)
+    } else if (isResetDuringEnable == 1) {
+      handle_error_blink("O", 0.01f); // Orange - Reset during enable - O (dash-dash-dash)
+    } else if (isMagnetWeakSignal == 1) {
+      handle_error_blink("0", 0.01f); // Orange - Magnet Weak Signal - 0 (dash-dash-dash-dash-dash)
+    } else {
+      // Normal operation: position-based hue
+      set_led_hue((float)singleTurnCounts / CPR, 1.0);
+    }
 
-						lastVelocityCPS = filteredVelocityCPS;
-						lastAccelCPS2 = filteredAccelCPS2;
-					}
-				}
+    // currentTime is time at START of the loop
+    uint32_t loopTime = HAL_GetTick() - currentTimeMillisec;
+    if (loopTime > TARGET_LOOP_TIME) {
+      isLoopOverrun = 1;  // Set loop overrun status
+    } else {
+      isLoopOverrun = 0;  // Clear loop overrun status
+    }
 
-
-				prevMultiTurnCounts = multiTurnCounts;
-				prevTimeMillisec = currentTimeMillisec;
-
-
-				// Status 5: Proximity sensor status (based on ADC reading)
-				if (proxMode) {
-					if (HAL_ADC_PollForConversion(&hadc1, 100) == HAL_OK) {
-						int adcValue = HAL_ADC_GetValue(&hadc1);
-					}
-				}
-
-				TxDataBooleanStatus[0] = 0;  // Start with empty byte: 00000000
-				TxDataBooleanStatus[0] |= (isHardwareFault & 0x01) << 0;       // Add bit 0
-				TxDataBooleanStatus[0] |= (isLoopOverrun & 0x01) << 1;         // Add bit 1
-				TxDataBooleanStatus[0] |= (isCANInvalid & 0x01) << 2;          // Add bit 2
-				TxDataBooleanStatus[0] |= (isResetDuringEnable & 0x01) << 3;   // Add bit 3
-				TxDataBooleanStatus[0] |= (isMagnetWeakSignal & 0x01) << 4;    // Add bit 4
-				TxDataBooleanStatus[0] |= (isRotationOverspeed & 0x01) << 5;   // Add bit 5
-				TxDataBooleanStatus[0] |= (isCANClogged & 0x01) << 6;          // Add bit 6
-				TxDataBooleanStatus[0] |= (isUnderVolted & 0x01) << 7;         // Add bit 7
-
-				// Pack combined velocity and acceleration as 8 bytes (4 bytes velocity + 4 bytes acceleration, both 32-bit signed)
-				// Big-endian format
-				TxDataVelocityAccel[0] = (uint8_t)(velocityCountsScaled >> 24);    // Use scaled values
-				TxDataVelocityAccel[1] = (uint8_t)(velocityCountsScaled >> 16);
-				TxDataVelocityAccel[2] = (uint8_t)(velocityCountsScaled >> 8);
-				TxDataVelocityAccel[3] = (uint8_t)(velocityCountsScaled);          // Velocity LSB
-				TxDataVelocityAccel[4] = (uint8_t)(accelCountsScaled >> 24);       // Use scaled values
-				TxDataVelocityAccel[5] = (uint8_t)(accelCountsScaled >> 16);
-				TxDataVelocityAccel[6] = (uint8_t)(accelCountsScaled >> 8);
-				TxDataVelocityAccel[7] = (uint8_t)(accelCountsScaled);             // Acceleration LSB
-
-				// Add message to CAN Tx FIFO queue
-				// Calculate base CAN ID for this device
-				uint32_t baseCanId = BASE_ID + device_id;
-
-				// Position message: embed API ID 0 in the CAN arbitration ID (8 bytes - raw counts)
-				TxHeaderPosition.Identifier = baseCanId | (POSITION_API_ID << 10);           // API 0: baseCanId | 0x000
-				// Combined velocity/acceleration message: embed API ID 1 in the CAN arbitration ID (8 bytes)
-				TxHeaderVelocityAccel.Identifier = baseCanId | (VELOCITY_ACCEL_API_ID << 10); // API 1: baseCanId | 0x400
-				// Boolean status message: embed API ID 2 in the CAN arbitration ID (1 byte)
-				TxHeaderBooleanStatus.Identifier = baseCanId | (BOOLEAN_STATUS_API_ID << 10); // API 2: baseCanId | 0x800
-
-				// returns HAL_Error if fifo queue is full or CAN is not initialized correctly
-				// HAL_OK otherwise
-				positionCanStatus = HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &TxHeaderPosition, TxDataPosition);
-				velocityAccelCanStatus = HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &TxHeaderVelocityAccel, TxDataVelocityAccel);
-				booleanStatusCanStatus = HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &TxHeaderBooleanStatus, TxDataBooleanStatus);
-
-			} else {
-	            // Encoder read failed while ready - handle gracefully
-	            mt6835_error_count++;
-	            if (mt6835_error_count > 10) { // Higher threshold
-	                encoder_ready = 0; // Mark as not ready
-	                isHardwareFault = 1;
-	            }
-
-	            // Set error status but don't flood CAN
-	            positionCanStatus = HAL_ERROR;
-	            velocityAccelCanStatus = HAL_ERROR;
-	            booleanStatusCanStatus = HAL_ERROR;
-			}
-		} else {
-	        static uint32_t lastInitAttempt = 0;
-
-	        // Only try initialization every 100ms to avoid overwhelming the SPI bus
-	        if ((currentTimeMillisec - lastInitAttempt) >= 100) {
-	            if (mt6835_update_counts(&hspi1) == HAL_OK) {
-	                // Need multiple consecutive successful reads
-	                int success_count = 0;
-	                for (int i = 0; i < 5; i++) {
-	                    HAL_Delay(2); // Small delay between reads
-	                    if (mt6835_update_counts(&hspi1) == HAL_OK) {
-	                        success_count++;
-	                    } else {
-	                        break;
-	                    }
-	                }
-
-	                if (success_count >= 5) {
-	                    encoder_ready = 1;
-	                    mt6835_error_count = 0;
-
-	                    // Reset velocity calculation state
-	                    prevTimeMillisec = 0;
-	                    filteredVelocityCPS = 0.0f;
-	                    filteredAccelCPS2 = 0.0f;
-	                }
-	            }
-	            lastInitAttempt = currentTimeMillisec;
-	        }
-
-	        // Set error status for CAN
-	        positionCanStatus = HAL_ERROR;
-	        velocityAccelCanStatus = HAL_ERROR;
-	        booleanStatusCanStatus = HAL_ERROR;
-		}
-
-		//------------------------------------------------------------------------------------------------------------------------
-		//  Error handling and status updates
-		//--------------------------------------------------------------------------------------------------------
-	    // Only check for clogging if we actually tried to send messages
-	    if (encoder_ready) {
-	        if (positionCanStatus != HAL_OK || velocityAccelCanStatus != HAL_OK || booleanStatusCanStatus != HAL_OK) {
-	            if ((currentTimeMillisec - lastHeartbeatTime) > HEARTBEAT_TIMEOUT) {
-	                isCANInvalid = 1;
-	            } else {
-	                isCANClogged = 1;
-	            }
-	        } else {
-	            isCANInvalid = 0;
-	            isCANClogged = 0;
-	        }
-	    }
-
-		if(get_weak_magnetic_field_warning() == 1) {
-		  isMagnetWeakSignal = 1;  // Magnet is not in ideal range
-		} else {
-		  isMagnetWeakSignal = 0;  // Magnet is in ideal range
-		}
-
-		if(get_under_voltage_warning() == 1) {
-		  isUnderVolted = 1;  // System is under-volted
-		} else {
-		  isUnderVolted = 0;  // System is not under-volted
-		}
-
-		if(get_rotation_overspeed_warning() == 1) {
-		  isRotationOverspeed = 1;  // Rotation is overspeed
-		} else {
-		  isRotationOverspeed = 0;  // Rotation is not overspeed
-		}
-
-		if (mt6835_update_counts(&hspi1) != HAL_OK) {
-			mt6835_error_count++;
-			if (mt6835_error_count > 5) { // threshold for hardware fault
-				isHardwareFault = 1;
-			}
-		} else {
-			mt6835_error_count = 0;
-			isHardwareFault = 0;
-		}
-
-		// LED status logic for all boolean statuses
-		if (isHardwareFault == 1) {
-			handle_error_blink("SOS", 0.0f); // Red - Hardware fault (emergency) - SOS
-		} else if (isLoopOverrun == 1) {
-			handle_error_blink("M", 0.16f); // Yellow - Overrun - M (dash-dash)
-		} else if (isUnderVolted == 1) {
-			handle_error_blink("I", 0.16f); // Yellow - Under voltage - I (dot-dot)
-		} else if (isRotationOverspeed == 1) {
-			handle_error_blink("S", 0.16f); // Yellow - Rotation Overspeed - S (dot-dot-dot)
-		} else if (isCANInvalid == 1) {
-			handle_error_blink("H", 0.83f); // Purple - CAN Invalid - H (dot-dot-dot-dot)
-		} else if (isCANClogged == 1) {
-			handle_error_blink("5", 0.83f); // Purple - CAN Clogged - 5 (dot-dot-dot-dot-dot)
-		} else if (isResetDuringEnable == 1) {
-			handle_error_blink("O", 0.01f); // Orange - Reset during enable - O (dash-dash-dash)
-		} else if (isMagnetWeakSignal == 1) {
-			handle_error_blink("0", 0.01f); // Orange - Magnet Weak Signal - 0 (dash-dash-dash-dash-dash)
-		} else {
-			// Normal operation: position-based hue
-			set_led_hue((float)singleTurnCounts / CPR, 1.0);
-		}
-
-
-		/* CAN Error reading */
-		// if (errorStatus == ENCODER_STATUS_OK)
-		// {
-		// 	// normal
-		// 	float hueTest = (float) singleTurnCounts / CPR;
-		// }
-		// else if (errorStatus == ENCODER_STATUS_NO_CANBUS) {
-
-		// 			pooptest = 1;
-		// }
-		// // todo other errors
-
-		// // Error
-		// if (pooptest > 0) {
-		// 	blink_led_morse_init("SOS", 0.666); // code, color
-		// 	pooptest = 0;
-
-		// }
-		// if(blink_led_morse_process())
-		// {
-		// 	pooptest = 1;
-		// }
-
-		/* LED modes*/
-		if (proxMode) {
-			// Poll for ADC conversion completion
-			if (HAL_ADC_PollForConversion(&hadc1, 100) == HAL_OK) {
-				// Get the ADC value. Between 4095 and 0
-				int adcValue = HAL_ADC_GetValue(&hadc1);
-				if (adcValue > 2500 || adcValue < 1500) {
-					//set_led_rgb(0, 0, 255);
-
-				} else {
-					//set_led_rgb(0, 255, 0);
-				}
-
-				// Optional: Process the ADC value
-			} else {
-
-			}
-		}
-
-		// currentTime is time at START of the loop
-		uint32_t loopTime = HAL_GetTick() - currentTimeMillisec;
-		if (loopTime > TARGET_LOOP_TIME) {
-			isLoopOverrun = 1;  // Set loop overrun status
-		} else {
-			isLoopOverrun = 0;  // Clear loop overrun status
-		}
-
-	}
+  }
     /* USER CODE END WHILE */
 
   /* USER CODE BEGIN 3 */
@@ -1401,6 +1317,19 @@ void txHeaderConfigure(FDCAN_TxHeaderTypeDef* header) {
     header->FDFormat = FDCAN_CLASSIC_CAN;
     header->TxEventFifoControl = FDCAN_NO_TX_EVENTS;
     header->MessageMarker = 0;
+}
+
+/**
+ * @brief Configure RX header for receiving CAN messages
+ * @param header Pointer to the RX header structure to configure
+ * @note This function sets up the expected format for incoming messages
+ */
+void rxHeaderConfigure(FDCAN_RxHeaderTypeDef* header) {
+    header->IdType = FDCAN_EXTENDED_ID;
+    header->RxFrameType = FDCAN_DATA_FRAME;
+    header->ErrorStateIndicator = FDCAN_ESI_ACTIVE;
+    header->BitRateSwitch = FDCAN_BRS_OFF;
+    header->FDFormat = FDCAN_CLASSIC_CAN;
 }
 
 void txHeaderConfigureBooleanStatus(FDCAN_TxHeaderTypeDef* header) {

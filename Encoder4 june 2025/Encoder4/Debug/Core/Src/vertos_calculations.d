@@ -1,4 +1,5 @@
-Core/Src/main.o: ../Core/Src/main.c ../Core/Inc/main.h \
+Core/Src/vertos_calculations.o: ../Core/Src/vertos_calculations.c \
+ ../Core/Inc/vertos_calculations.h ../Core/Inc/flash_config.h \
  ../Drivers/STM32G0xx_HAL_Driver/Inc/stm32g0xx_hal.h \
  ../Core/Inc/stm32g0xx_hal_conf.h \
  ../Drivers/STM32G0xx_HAL_Driver/Inc/stm32g0xx_hal_rcc.h \
@@ -39,16 +40,9 @@ Core/Src/main.o: ../Core/Src/main.c ../Core/Inc/main.h \
  ../Drivers/STM32G0xx_HAL_Driver/Inc/stm32g0xx_hal_spi.h \
  ../Drivers/STM32G0xx_HAL_Driver/Inc/stm32g0xx_hal_spi_ex.h \
  ../Drivers/STM32G0xx_HAL_Driver/Inc/stm32g0xx_hal_tim.h \
- ../Drivers/STM32G0xx_HAL_Driver/Inc/stm32g0xx_hal_tim_ex.h \
- ../Core/Inc/rgb_led.h ../Core/Inc/MT6835.h ../Core/Inc/vl53l0x_api.h \
- ../Core/Inc/vl53l0x_api_strings.h ../Core/Inc/vl53l0x_def.h \
- ../Core/Inc/vl53l0x_device.h ../Core/Inc/vl53l0x_types.h \
- ../Core/Inc/vl53l0x_platform.h ../Core/Inc/vl53l0x_platform_log.h \
- ../Core/Inc/non_blocking_morse.h ../Core/Inc/error_blink.h \
- ../Core/Inc/main.h ../Core/Inc/flex_encoder.h ../Core/Inc/mlx90393.h \
- ../Core/Inc/flash_config.h ../Core/Inc/vertos_calculations.h \
- ../Core/Inc/flash_config.h
-../Core/Inc/main.h:
+ ../Drivers/STM32G0xx_HAL_Driver/Inc/stm32g0xx_hal_tim_ex.h
+../Core/Inc/vertos_calculations.h:
+../Core/Inc/flash_config.h:
 ../Drivers/STM32G0xx_HAL_Driver/Inc/stm32g0xx_hal.h:
 ../Core/Inc/stm32g0xx_hal_conf.h:
 ../Drivers/STM32G0xx_HAL_Driver/Inc/stm32g0xx_hal_rcc.h:
@@ -90,20 +84,3 @@ Core/Src/main.o: ../Core/Src/main.c ../Core/Inc/main.h \
 ../Drivers/STM32G0xx_HAL_Driver/Inc/stm32g0xx_hal_spi_ex.h:
 ../Drivers/STM32G0xx_HAL_Driver/Inc/stm32g0xx_hal_tim.h:
 ../Drivers/STM32G0xx_HAL_Driver/Inc/stm32g0xx_hal_tim_ex.h:
-../Core/Inc/rgb_led.h:
-../Core/Inc/MT6835.h:
-../Core/Inc/vl53l0x_api.h:
-../Core/Inc/vl53l0x_api_strings.h:
-../Core/Inc/vl53l0x_def.h:
-../Core/Inc/vl53l0x_device.h:
-../Core/Inc/vl53l0x_types.h:
-../Core/Inc/vl53l0x_platform.h:
-../Core/Inc/vl53l0x_platform_log.h:
-../Core/Inc/non_blocking_morse.h:
-../Core/Inc/error_blink.h:
-../Core/Inc/main.h:
-../Core/Inc/flex_encoder.h:
-../Core/Inc/mlx90393.h:
-../Core/Inc/flash_config.h:
-../Core/Inc/vertos_calculations.h:
-../Core/Inc/flash_config.h:

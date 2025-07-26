@@ -27,7 +27,7 @@ public class CoreDevice {
     private final int deviceID;
     private boolean debugMode;
 
-    private static final int QUERY_API_ID = 1;   // API ID for querying devices
+    private static final int QUERY_API_ID = 44;   // API ID for querying devices
     
 
     public CoreDevice(int deviceID, boolean debugMode) {
@@ -72,19 +72,11 @@ public class CoreDevice {
     }
 
     /**
-     * Calculate the correct CAN identifier for receiving data
-     * This matches the C code: baseCanId | (apiId << 10)
-     */
-    private int getRxIdentifier(int apiId) {
-        return (BASE_ID + deviceID) | (apiId << 10);
-    }
-
-    /**
      * Calculate the correct CAN identifier for sending commands
      * This should match what the C code expects to receive
      */
     private int getTxIdentifier(int apiId) {
-        return (BASE_ID + deviceID) | (apiId << 10);
+        return (BASE_ID + deviceID) | (apiId << 6);
     }
 
     /**
@@ -193,20 +185,10 @@ public class CoreDevice {
         boolean success = false;
 
         while (System.currentTimeMillis() - startTime < timeoutMs) {
-            success = attemptCanOperation(() -> {
-                int canId = getTxIdentifier(apiID);
-                canDevice.writePacket(commandData, canId);
-                if (debugMode) {
-                    System.out.printf("Device %d: Sent %s command (CAN_ID=0x%X, API_ID=%d, Value=%.6f)%n", 
-                                    deviceID, commandName, canId, apiID, value);
-                }
-                return true;
-            }, apiID, false);
-
+            success = sendPacket(apiID, commandData);
             if (success) {
                 break; // Exit the loop if the operation is successful
             }
-
             try {
                 Thread.sleep(10); // Small delay before retrying
             } catch (InterruptedException e) {
@@ -240,16 +222,7 @@ public class CoreDevice {
         boolean success = false;
 
         while (System.currentTimeMillis() - startTime < timeoutMs) {
-            success = attemptCanOperation(() -> {
-                int canId = getTxIdentifier(apiID);
-                canDevice.writePacket(commandData, canId);
-                if (debugMode) {
-                    System.out.printf("Device %d: Sent %s command (CAN_ID=0x%X, API_ID=%d, Value=%d)%n", 
-                                    deviceID, commandName, canId, apiID, value);
-                }
-                return true;
-            }, apiID, false);
-
+            success = sendPacket(apiID, commandData);
             if (success) {
                 break; // Exit the loop if the operation is successful
             }
@@ -312,16 +285,7 @@ public class CoreDevice {
         boolean success = false;
 
         while (System.currentTimeMillis() - startTime < timeoutMs) {
-            success = attemptCanOperation(() -> {
-                int canId = getTxIdentifier(apiID);
-                canDevice.writePacket(commandData, canId);
-                if (debugMode) {
-                    System.out.printf("Device %d: Sent %s command (CAN_ID=0x%X, API_ID=%d, Value=%d)%n", 
-                                    deviceID, commandName, canId, apiID, commandData[0]);
-                }
-                return true;
-            }, apiID, false);
-
+            success = sendPacket(apiID, commandData);
             if (success) {
                 break; // Exit the loop if the operation is successful
             }
@@ -352,7 +316,7 @@ public class CoreDevice {
         long startTime = System.currentTimeMillis();
         
         while (System.currentTimeMillis() - startTime < timeoutMs) {
-            int ackCanId = getTxIdentifier(apiID + 100); // Ack API is command API + 100
+            int ackCanId = getTxIdentifier(apiID); // Ack API is command API + 100
             if (canDevice.readPacketLatest(ackCanId, canData)) {
                 if (canData.length >= 1 && canData.data[0] == (byte)0xAC) { // 0xAC = acknowledgment byte
                     if (debugMode) {
@@ -386,9 +350,9 @@ public class CoreDevice {
      * @param apiID The API ID for the packet.
      * @param data  The payload to send.
      */
-    public void sendPacket(int apiID, byte[] data) {
-        attemptCanOperation(() -> {
-            int canId = getTxIdentifier(apiID);
+    public boolean sendPacket(int apiID, byte[] data) {
+        int canId = apiID;
+        return attemptCanOperation(() -> {
             canDevice.writePacket(data, canId);
             if (debugMode) {
                 System.out.printf("Device %d: Sent CAN Packet: CAN_ID=0x%X, API_ID=%d, Data=%s%n",
@@ -505,15 +469,6 @@ public class CoreDevice {
         }
     }
 
-    private void errorByteLengthDebug() {
-        // Not enough data to parse required bytes
-        if (debugMode) {
-            System.out.printf(
-                "Device %d: Received CAN packet with only %d bytes; need more.%n",
-                deviceID, canData.length
-            );
-        }
-    }
 
     /**
      * Determines whether the CAN device is connected by sending and receiving packets.
@@ -541,28 +496,6 @@ public class CoreDevice {
     }
 
     /**
-     * Helper method to read fault status from the CAN device.
-     *
-     * @param apiID The API ID for the fault status.
-     * @return True if the fault is detected, false otherwise.
-     */
-    private boolean readFaultStatus(int apiID) {
-        return attemptCanOperation(() -> {
-            int canId = getRxIdentifier(apiID);
-            if (canDevice.readPacketLatest(canId, canData)) {
-                byte[] receivedData = canData.data;
-                if (canData.length >= 1) {
-                    return (receivedData[0] & 0x01) != 0;
-                } else {
-                    errorByteLengthDebug();
-                    return null;
-                }
-            }
-            return null;
-        }, apiID, false);
-    }
-
-    /**
      * Reads a CAN packet and converts it to a 64-bit signed long value (native counts).
      * This method assumes the data is in big-endian format.
      *
@@ -580,25 +513,6 @@ public class CoreDevice {
              | ((long)(receivedData[7] & 0xFF));
     }
 
-    /**
-     * Reads a 16-bit signed integer from a CAN packet at the specified offset.
-     * This method assumes the data is in big-endian format.
-     *
-     * @param receivedData The byte array containing the received CAN packet data.
-     * @param offset The offset in the byte array where the 16-bit value starts.
-     * @return The 16-bit signed integer value.
-     */
-    private int readCanPacketAs16BitSigned(byte[] receivedData, int offset) {
-        // Combine two bytes into a 16-bit signed integer (big-endian)
-        int value = ((receivedData[offset] & 0xFF) << 8) | (receivedData[offset + 1] & 0xFF);
-        
-        // Convert to signed 16-bit value
-        if (value > 32767) {
-            value -= 65536;
-        }
-        
-        return value;
-    }
     
     // Helper class to represent a pair of CoreDeviceListener and Integer
     private static class Pair<T, U> {
